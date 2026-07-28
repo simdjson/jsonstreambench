@@ -81,21 +81,46 @@ per gigabyte from `getrusage`, which does aggregate all threads.
 
 ## Corpus
 
-The Pison/cuJSON collection publishes six datasets as bulky records but only two
-of the six JSON-lines files. `tools/make_ndjson.cpp` regenerates the rest by
-minifying every element of each dataset's dominating array onto its own line
-(`tweets`, `data`, `products`, `items`, `items`, `items`):
+`./datasets.sh` obtains the whole corpus:
+
+```sh
+./datasets.sh --dir ~/jsonbench
+```
+
+It downloads the six bulky records from the public collection the Pison and
+cuJSON papers use, then derives the JSON-lines form of each with `make_ndjson`,
+which minifies every element of the dataset's dominating array onto its own line
+(`tweets`, `data`, `products`, `items`, `items`, `items`). Roughly 12 GB of disk
+and a `pip install gdown`. The result is `~/jsonbench/ndjson/<dataset>.ndjson`.
+
+The collection publishes all six datasets as bulky records but only two of the
+six JSON-lines files, which is why the rest are derived. On the two published in
+both forms, the derived file has exactly the same record count as the published
+one — and five of the six queries then reproduce the paper's match counts
+exactly, which is the stronger check.
+
+Two cautions, both learned the hard way:
+
+* The bulky records are fetched **by file id**, not by pulling the whole
+  published folder. That folder also holds the scalability corpus, the cuDF
+  copies, and the `meta_json` set — about 51 GB, eight times what the benchmark
+  needs — and downloading all of it is what trips Google Drive's per-file quota.
+  The fetch order is rotated per host so co-provisioned machines do not request
+  the same file at the same moment.
+* Even so, provisioning several machines at once can exhaust the quota
+  (`Cannot retrieve the public link of the file`); retrying does not help, it
+  resets after roughly a day. Keep one machine as the corpus holder and copy
+  from it instead:
+
+```sh
+./datasets.sh --dir ~/jsonbench --corpus-from holder:jsonbench/ndjson
+```
+
+A single file can also be converted directly:
 
 ```sh
 ./build/make_ndjson twitter_large_record.json twitter.ndjson tweets
 ```
-
-On the two datasets published in both forms, the derived file has exactly the
-same record count as the published one.
-
-Note that the published collection is served from a rate-limited public link:
-fetching it from several machines at once exhausts the per-file quota. Copy the
-derived corpus between machines instead.
 
 ## Defects found in the upstream artifacts
 
