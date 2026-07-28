@@ -122,11 +122,6 @@ Reported because they affect anyone using these as a baseline.
 We implement all queries from the specifications in Pison's paper rather than
 from these harnesses, which is why the match counts reproduce.
 
-## Paper
-
-These measurements support "Parsing Streams of JSON Documents at Tens of
-Gigabytes per Second" (Champagne Gareau and Lemire). The paper's collection
-scripts, raw results, and figure generation live with the paper source.
 
 ## License
 
