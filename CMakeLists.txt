@@ -106,6 +106,49 @@ if(rapidjson_ADDED)
   set(HAVE_RAPIDJSON 1)
 endif()
 
+# Boost.JSON. Its standalone mode was removed after 1.80, so it needs Boost's
+# core headers -- but only fifteen header-only libraries of them, listed here
+# rather than pulling in Boost entire. They are pinned to the same release as
+# Boost.JSON itself, and nothing is compiled: boost_json_engine.cpp includes
+# <boost/json/src.hpp>, which is the library's single-translation-unit form.
+set(BOOST_RELEASE boost-1.87.0)
+set(BOOST_JSON_DEPS
+  config assert static_assert throw_exception container move intrusive core
+  system variant2 mp11 align endian describe container_hash)
+set(BOOST_INCLUDE_DIRS "")
+set(BOOST_ALL_FOUND YES)
+foreach(blib json ${BOOST_JSON_DEPS})
+  CPMAddPackage(
+    NAME boost_${blib}
+    GITHUB_REPOSITORY boostorg/${blib}
+    GIT_TAG ${BOOST_RELEASE}
+    DOWNLOAD_ONLY YES)
+  if(boost_${blib}_ADDED)
+    list(APPEND BOOST_INCLUDE_DIRS ${boost_${blib}_SOURCE_DIR}/include)
+  else()
+    set(BOOST_ALL_FOUND NO)
+  endif()
+endforeach()
+if(BOOST_ALL_FOUND)
+  add_library(boost_json INTERFACE)
+  target_include_directories(boost_json SYSTEM INTERFACE ${BOOST_INCLUDE_DIRS})
+  list(APPEND DOM_SOURCES src/boost_json_engine.cpp)
+  set(HAVE_BOOST_JSON 1)
+endif()
+
+CPMAddPackage(
+  NAME nlohmann_json
+  GITHUB_REPOSITORY nlohmann/json
+  GIT_TAG v3.11.3
+  DOWNLOAD_ONLY YES)
+if(nlohmann_json_ADDED)
+  add_library(nlohmann_json INTERFACE)
+  target_include_directories(nlohmann_json SYSTEM INTERFACE
+    ${nlohmann_json_SOURCE_DIR}/include)
+  list(APPEND DOM_SOURCES src/nlohmann_engine.cpp)
+  set(HAVE_NLOHMANN 1)
+endif()
+
 # --- the benchmark ---------------------------------------------------------
 add_executable(jsonbench
   src/main.cpp
@@ -126,6 +169,12 @@ if(HAVE_YYJSON)
 endif()
 if(HAVE_RAPIDJSON)
   target_link_libraries(jsonbench PRIVATE rapidjson)
+endif()
+if(HAVE_BOOST_JSON)
+  target_link_libraries(jsonbench PRIVATE boost_json)
+endif()
+if(HAVE_NLOHMANN)
+  target_link_libraries(jsonbench PRIVATE nlohmann_json)
 endif()
 if(JSONBENCH_NATIVE)
   include(CheckCXXCompilerFlag)
