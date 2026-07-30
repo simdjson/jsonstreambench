@@ -69,15 +69,64 @@ target_compile_options(pison PUBLIC -include cstdint)
 target_compile_features(pison PUBLIC cxx_std_11)
 set_target_properties(pison PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# --- conventional DOM parsers ----------------------------------------------
+# Baselines: what a practitioner uses today. Each is optional; a library that
+# does not resolve drops its engine from the run rather than breaking the build.
+# All are pinned, and all are header-only or single-file, so the checkout stays
+# small.
+set(DOM_SOURCES src/dom_engine.cpp)
+set(HAVE_YYJSON 0)
+set(HAVE_RAPIDJSON 0)
+set(HAVE_BOOST_JSON 0)
+set(HAVE_NLOHMANN 0)
+
+CPMAddPackage(
+  NAME yyjson
+  GITHUB_REPOSITORY ibireme/yyjson
+  GIT_TAG 0.10.0
+  DOWNLOAD_ONLY YES)
+if(yyjson_ADDED)
+  add_library(yyjson STATIC ${yyjson_SOURCE_DIR}/src/yyjson.c)
+  target_include_directories(yyjson SYSTEM PUBLIC ${yyjson_SOURCE_DIR}/src)
+  set_target_properties(yyjson PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  list(APPEND DOM_SOURCES src/yyjson_engine.cpp)
+  set(HAVE_YYJSON 1)
+endif()
+
+CPMAddPackage(
+  NAME rapidjson
+  GITHUB_REPOSITORY Tencent/rapidjson
+  GIT_TAG 24b5e7a8b27f42fa16b96fc70aade9106cf7102f
+  DOWNLOAD_ONLY YES)
+if(rapidjson_ADDED)
+  add_library(rapidjson INTERFACE)
+  target_include_directories(rapidjson SYSTEM INTERFACE
+    ${rapidjson_SOURCE_DIR}/include)
+  list(APPEND DOM_SOURCES src/rapidjson_engine.cpp)
+  set(HAVE_RAPIDJSON 1)
+endif()
+
 # --- the benchmark ---------------------------------------------------------
 add_executable(jsonbench
   src/main.cpp
   src/queries.cpp
   src/simdjson_engine.cpp
-  src/pison_engine.cpp)
+  src/pison_engine.cpp
+  ${DOM_SOURCES})
 target_include_directories(jsonbench PRIVATE src)
+target_compile_definitions(jsonbench PRIVATE
+  JSONBENCH_HAVE_YYJSON=${HAVE_YYJSON}
+  JSONBENCH_HAVE_RAPIDJSON=${HAVE_RAPIDJSON}
+  JSONBENCH_HAVE_BOOST_JSON=${HAVE_BOOST_JSON}
+  JSONBENCH_HAVE_NLOHMANN=${HAVE_NLOHMANN})
 target_link_libraries(jsonbench PRIVATE
   simdjson pison counters Threads::Threads)
+if(HAVE_YYJSON)
+  target_link_libraries(jsonbench PRIVATE yyjson)
+endif()
+if(HAVE_RAPIDJSON)
+  target_link_libraries(jsonbench PRIVATE rapidjson)
+endif()
 if(JSONBENCH_NATIVE)
   include(CheckCXXCompilerFlag)
   check_cxx_compiler_flag("-march=native" HAS_MARCH_NATIVE)

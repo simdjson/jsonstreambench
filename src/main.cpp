@@ -19,6 +19,7 @@
 //     on a commutative hash of the extracted values.
 //   * Pison is given the minimum number of bitmap levels its query needs.
 #include "common.h"
+#include "dom_engine.h"
 #include "loaders.h"
 #include "metrics.h"
 #include "pison_engine.h"
@@ -302,6 +303,12 @@ int main(int argc, char **argv) {
   // -----------------------------------------------------------------------
   // Correctness: both engines, same query, same answer.
   // -----------------------------------------------------------------------
+  static const dom::library kDomLibraries[] = {
+      dom::library::yyjson, dom::library::rapidjson,
+      dom::library::boost_json, dom::library::nlohmann};
+  // Sizes each DOM worker's arena. One pass over the input, taken once here so
+  // that no timed region pays for it.
+  const size_t dom_longest = dom::longest_document(data, bytes);
   bool agree = true;
   extraction pison_ref;
   if (o.wants("verify") || o.dump > 0) {
@@ -333,6 +340,29 @@ int main(int argc, char **argv) {
                     ? "AGREE"
                     : (pison_dec.matches == sj_dec.matches ? "COUNT-ONLY"
                                                            : "DISAGREE"));
+    // Every DOM library must reproduce simdjson's decode result exactly, both
+    // serially and under the slicing rule. The parallel check also proves the
+    // slices abut: a dropped or duplicated document changes the match count.
+    for (auto lib : kDomLibraries) {
+      if (!dom::available(lib)) { continue; }
+      extraction ser = dom::run_serial(lib, data, bytes, q, dom_longest);
+      extraction par =
+          dom::run_parallel(lib, data, bytes, q, 8, 256u << 10, dom_longest);
+      bool ok = ser.matches == sj_dec.matches && ser.sum == sj_dec.sum;
+      bool ok_par = par.matches == sj_dec.matches && par.sum == sj_dec.sum;
+      if (!ok || !ok_par) { agree = false; }
+      std::printf("# agreement decode: %s matches=%llu hash=%llu | %s"
+                  " (parallel matches=%llu hash=%llu | %s)\n",
+                  dom::library_name(lib), (unsigned long long)ser.matches,
+                  (unsigned long long)ser.sum,
+                  ok ? "AGREE" : (ser.matches == sj_dec.matches ? "COUNT-ONLY"
+                                                                : "DISAGREE"),
+                  (unsigned long long)par.matches,
+                  (unsigned long long)par.sum,
+                  ok_par ? "AGREE"
+                         : (par.matches == sj_dec.matches ? "COUNT-ONLY"
+                                                          : "DISAGREE"));
+    }
   }
   if (o.dump > 0) {
     std::vector<std::string> pt, st;
@@ -393,6 +423,19 @@ int main(int argc, char **argv) {
     extraction e = sj::run_serial(data, bytes, q, sj::workload::query, true,
                                   o.batch_mb << 20);
     emit("simdjson-builtin", "query", "query", 2, o, label, bytes, docs, s, e);
+
+    // Conventional tree-building parsers. A DOM parse unescapes every string
+    // and converts every number whether the query needs it or not, so these
+    // are the analogue of simdjson's `decode` row, not of its `query` row.
+    for (auto lib : kDomLibraries) {
+      if (!dom::available(lib)) { continue; }
+      auto ds = measure_single(o.reps, [&] {
+        dom::run_serial(lib, data, bytes, q, dom_longest);
+      });
+      extraction de = dom::run_serial(lib, data, bytes, q, dom_longest);
+      emit(dom::engine_name(lib, false), "decode", "decode", 1, o, label, bytes,
+           docs, ds, de);
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -414,6 +457,20 @@ int main(int argc, char **argv) {
       extraction e = sj::run_parallel(data, bytes, q, ph.w, t, o.slice_kb << 10);
       emit("simdjson-parallel", ph.phase, sj::workload_name(ph.w), t, o, label,
            bytes, docs, s, e);
+    }
+    // The same slicing rule, carrying a conventional DOM parser instead of the
+    // on-demand one. Nothing in the decomposition knows what parses a document,
+    // so this measures how much of our throughput comes from the slicing and
+    // how much from on-demand parsing.
+    for (auto lib : kDomLibraries) {
+      if (!dom::available(lib)) { continue; }
+      auto ds = measure_parallel(o.reps, [&] {
+        dom::run_parallel(lib, data, bytes, q, t, o.slice_kb << 10, dom_longest);
+      });
+      extraction de = dom::run_parallel(lib, data, bytes, q, t,
+                                        o.slice_kb << 10, dom_longest);
+      emit(dom::engine_name(lib, true), "decode", "decode", t, o, label, bytes,
+           docs, ds, de);
     }
   }
 
