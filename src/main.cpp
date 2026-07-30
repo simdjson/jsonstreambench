@@ -54,9 +54,16 @@ struct options {
   // scripts narrow this so a slice-size or thread-count study does not re-run
   // the loader and agreement work every time.
   std::string sections = "load,verify,single,scaling,e2e";
+  // Restrict the run to one engine. Aggregate profilers (perf stat -a) cannot
+  // attribute counters to an engine when several run in the same process, so
+  // isolating one is the only way to ask "what is *this* engine waiting on".
+  std::string only_engine;
 
   bool wants(const char *s) const {
     return sections.find(s) != std::string::npos;
+  }
+  bool wants_engine(const char *e) const {
+    return only_engine.empty() || only_engine == e;
   }
 };
 
@@ -76,7 +83,9 @@ void usage() {
       "  --dump <n>           print the first n extracted values from each\n"
       "                       engine side by side, then exit\n"
       "  --sections <list>    comma list of load,verify,single,scaling,e2e\n"
-      "                       (default: all)\n");
+      "                       (default: all)\n"
+      "  --engine-only <name> run only this engine (e.g. simdjson-parallel,\n"
+      "                       yyjson-parallel); for profiling one engine alone\n");
 }
 
 bool parse_args(int argc, char **argv, options &o) {
@@ -95,6 +104,7 @@ bool parse_args(int argc, char **argv, options &o) {
     else if (a == "--verify") { o.verify_only = true; }
     else if (a == "--dump") { o.dump = strtoull(next().c_str(), nullptr, 10); }
     else if (a == "--sections") { o.sections = next(); }
+    else if (a == "--engine-only") { o.only_engine = next(); }
     else if (a == "--levels") { o.levels = atoi(next().c_str()); }
     else if (a == "--threads") {
       std::stringstream ss(next());
@@ -442,6 +452,7 @@ int main(int argc, char **argv) {
   // Thread scaling.
   // -----------------------------------------------------------------------
   for (size_t t : o.wants("scaling") ? o.threads : std::vector<size_t>{}) {
+    if (o.wants_engine("pison-parallel"))
     for (const auto &ph : pison_phases) {
       auto s = measure_parallel(o.reps, [&] {
         pison::run_stream(ptext, tbl, q, ph.w, levels, t);
@@ -450,6 +461,7 @@ int main(int argc, char **argv) {
       emit("pison-parallel", ph.phase, pison::workload_name(ph.w), t, o, label,
            bytes, docs, s, e);
     }
+    if (o.wants_engine("simdjson-parallel"))
     for (const auto &ph : sj_phases) {
       auto s = measure_parallel(o.reps, [&] {
         sj::run_parallel(data, bytes, q, ph.w, t, o.slice_kb << 10);
@@ -464,6 +476,7 @@ int main(int argc, char **argv) {
     // how much from on-demand parsing.
     for (auto lib : kDomLibraries) {
       if (!dom::available(lib)) { continue; }
+      if (!o.wants_engine(dom::engine_name(lib, true))) { continue; }
       auto ds = measure_parallel(o.reps, [&] {
         dom::run_parallel(lib, data, bytes, q, t, o.slice_kb << 10, dom_longest);
       });

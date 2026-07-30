@@ -28,14 +28,14 @@ find_package(Threads REQUIRED)
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_LIST_DIR}/cmake)
 include(get_cpm)
 
-# --- simdjson: the PR #2788 branch, pinned by commit -----------------------
-# parse_many_parallel lives in include/simdjson/ondemand_parallel.h on this
-# branch. Pinning by SHA keeps the paper's numbers reproducible even if the
-# branch is rebased or merged.
+# --- simdjson --------------------------------------------------------------
+# The parallel stream driver is ours (src/parallel_stream.h), so a released
+# simdjson suffices. Pinned by SHA to keep the paper reproducible.
+
 CPMAddPackage(
   NAME simdjson
   GITHUB_REPOSITORY simdjson/simdjson
-  GIT_TAG 88186d59  # PR #2788
+  GIT_TAG 93fce66a  # master
   OPTIONS "SIMDJSON_DEVELOPER_MODE OFF" "BUILD_SHARED_LIBS OFF")
 
 # --- lemire/counters: hardware performance counters (header only) ----------
@@ -68,6 +68,25 @@ target_compile_options(pison PRIVATE
 target_compile_options(pison PUBLIC -include cstdint)
 target_compile_features(pison PUBLIC cxx_std_11)
 set_target_properties(pison PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+# The parallel stream driver lives in this repository (src/parallel_stream.h),
+# not in simdjson. It goes faster when simdjson can skip the tail of a partially
+# read document, which needs stream_format::newline_delimited; detect it rather
+# than require it, so the benchmark still builds against released simdjson.
+if(EXISTS ${simdjson_SOURCE_DIR}/include/simdjson/base.h)
+  file(READ ${simdjson_SOURCE_DIR}/include/simdjson/base.h SIMDJSON_BASE_H)
+  string(FIND "${SIMDJSON_BASE_H}" "newline_delimited" NEWLINE_DELIMITED_POS)
+else()
+  set(NEWLINE_DELIMITED_POS -1)
+endif()
+if(NEWLINE_DELIMITED_POS GREATER -1)
+  set(NEWLINE_DELIMITED 1)
+  message(STATUS "simdjson has stream_format::newline_delimited")
+else()
+  set(NEWLINE_DELIMITED 0)
+  message(STATUS "simdjson lacks stream_format::newline_delimited; "
+                 "the parallel engine will use whitespace_delimited")
+endif()
 
 # --- conventional DOM parsers ----------------------------------------------
 # Baselines: what a practitioner uses today. Each is optional; a library that
@@ -158,6 +177,7 @@ add_executable(jsonbench
   ${DOM_SOURCES})
 target_include_directories(jsonbench PRIVATE src)
 target_compile_definitions(jsonbench PRIVATE
+  JSONBENCH_HAVE_NEWLINE_DELIMITED=${NEWLINE_DELIMITED}
   JSONBENCH_HAVE_YYJSON=${HAVE_YYJSON}
   JSONBENCH_HAVE_RAPIDJSON=${HAVE_RAPIDJSON}
   JSONBENCH_HAVE_BOOST_JSON=${HAVE_BOOST_JSON}
