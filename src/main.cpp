@@ -25,6 +25,8 @@
 #include "pison_engine.h"
 #include "simdjson_engine.h"
 
+#include "simdjson.h"
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -58,6 +60,8 @@ struct options {
   // attribute counters to an engine when several run in the same process, so
   // isolating one is the only way to ask "what is *this* engine waiting on".
   std::string only_engine;
+  // Force a simdjson kernel (haswell, icelake, ...) instead of runtime dispatch.
+  std::string impl;
 
   bool wants(const char *s) const {
     return sections.find(s) != std::string::npos;
@@ -85,7 +89,8 @@ void usage() {
       "  --sections <list>    comma list of load,verify,single,scaling,e2e\n"
       "                       (default: all)\n"
       "  --engine-only <name> run only this engine (e.g. simdjson-parallel,\n"
-      "                       yyjson-parallel); for profiling one engine alone\n");
+      "                       yyjson-parallel); for profiling one engine alone\n"
+      "  --impl <name>        force a simdjson kernel (haswell, icelake, ...)\n");
 }
 
 bool parse_args(int argc, char **argv, options &o) {
@@ -105,6 +110,7 @@ bool parse_args(int argc, char **argv, options &o) {
     else if (a == "--dump") { o.dump = strtoull(next().c_str(), nullptr, 10); }
     else if (a == "--sections") { o.sections = next(); }
     else if (a == "--engine-only") { o.only_engine = next(); }
+    else if (a == "--impl") { o.impl = next(); }
     else if (a == "--levels") { o.levels = atoi(next().c_str()); }
     else if (a == "--threads") {
       std::stringstream ss(next());
@@ -166,6 +172,16 @@ void emit(const char *engine, const char *phase, const char *workload_name,
 int main(int argc, char **argv) {
   options o;
   if (!parse_args(argc, argv, o)) { usage(); return 1; }
+
+  if (!o.impl.empty()) {
+    auto wanted = simdjson::get_available_implementations()[o.impl];
+    if (wanted == nullptr || !wanted->supported_by_runtime_system()) {
+      std::fprintf(stderr, "simdjson implementation unavailable: %s\n",
+                   o.impl.c_str());
+      return 1;
+    }
+    simdjson::get_active_implementation() = wanted;
+  }
 
   query_id q;
   if (!o.query_name.empty()) {
