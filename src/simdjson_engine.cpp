@@ -207,9 +207,16 @@ extraction run_serial(const char *data, size_t size, query_id q, workload w,
   parser.threaded = threaded;
   extraction total;
   ondemand::document_stream stream;
+  // The corpus is one document per line, the same structure Pison is handed as
+  // its record table, so we tell simdjson too.
   if (!parser
            .iterate_many(data, size, batch_bytes,
-                         stream_format::whitespace_delimited)
+#if JSONBENCH_HAVE_NEWLINE_DELIMITED
+                         stream_format::newline_delimited
+#else
+                         stream_format::whitespace_delimited
+#endif
+                         )
            .get(stream)) {
     for (auto it = stream.begin(); it != stream.end(); ++it) {
       auto doc = *it;
