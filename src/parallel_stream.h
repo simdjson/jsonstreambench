@@ -7,9 +7,9 @@
 // keeping it out means callers can adapt the decomposition to their own
 // pipeline rather than accept ours.
 //
-// Design. Each worker claims a byte range from one atomic counter and snaps
-// both ends forward to the next delimiter, so slices abut, never split a
-// document, and are computed with no coordination beyond the counter. Each
+// Design. Each worker claims a slice index from one atomic counter and calls
+// simdjson::slice_at, which snaps both ends to a delimiter so slices abut and
+// never split a document. Each
 // worker owns its parser and its output vector, so the hot path is lock-free.
 // Results come back as one vector per worker ("shards"): values keep their
 // order within a shard, but shards interleave with respect to the input.
@@ -64,20 +64,6 @@ public:
 
 namespace internal {
 
-// Snap `want` forward to the next boundary in [0, hi). Depends only on `want`,
-// which is what lets each worker compute its own slice: the end of one slice
-// and the start of the next are the same call.
-inline size_t snap(const char *data, size_t hi, size_t want,
-                   stream_format format) {
-  if (want >= hi) { return hi; }
-  if (format == stream_format::json_sequence) {
-    const void *rs = std::memchr(data + want, 0x1e, hi - want);
-    return rs ? size_t(static_cast<const char *>(rs) - data) : hi;
-  }
-  const void *nl = std::memchr(data + want, '\n', hi - want);
-  return nl ? size_t(static_cast<const char *>(nl) - data) + 1 : hi;
-}
-
 inline bool splittable(stream_format f) {
   return f == stream_format::whitespace_delimited ||
          f == stream_format::json_sequence
@@ -86,6 +72,33 @@ inline bool splittable(stream_format f) {
 #endif
       ;
 }
+
+inline char delimiter_for(stream_format f) {
+  return f == stream_format::json_sequence ? char(0x1e) : '\n';
+}
+
+#if JSONBENCH_HAVE_NEWLINE_DELIMITED
+using simdjson::slice_at;
+#else
+// simdjson::slice_at is not in released simdjson yet; same contract.
+inline simdjson::padded_string_view slice_at(simdjson::padded_string_view data,
+                                             char delimiter, size_t block_size,
+                                             size_t index) noexcept {
+  if (block_size == 0 || index > data.size() / block_size) { return {}; }
+  const size_t raw_begin = index * block_size;
+  if (raw_begin >= data.size()) { return {}; }
+  auto snap = [&](size_t want) -> size_t {
+    if (want >= data.size()) { return data.size(); }
+    const void *p = std::memchr(data.data() + want, delimiter, data.size() - want);
+    return p ? size_t(static_cast<const char *>(p) - data.data()) + 1 : data.size();
+  };
+  const size_t begin = (raw_begin == 0) ? 0 : snap(raw_begin);
+  const size_t end = snap(raw_begin + block_size);
+  if (begin >= end) { return {}; }
+  return simdjson::padded_string_view(data.data() + begin, end - begin,
+                                      data.capacity() - begin);
+}
+#endif
 
 } // namespace internal
 
@@ -97,8 +110,8 @@ template <typename T, typename F>
 result<T> parse_many(simdjson::padded_string_view json, F &&extract,
                      options opt = {}) {
   result<T> out;
-  const char *const data = json.data();
   const size_t length = json.size();
+  const char delimiter = internal::delimiter_for(opt.format);
 
   size_t workers = opt.threads;
   if (workers == 0) {
@@ -122,19 +135,13 @@ result<T> parse_many(simdjson::padded_string_view json, F &&extract,
       std::vector<T> &shard = out._shards[w];
 
       for (;;) {
-        const size_t raw = cursor.fetch_add(slice_bytes,
-                                            std::memory_order_relaxed);
-        if (raw >= length) { break; }
-        const size_t begin =
-            raw == 0 ? 0 : internal::snap(data, length, raw, opt.format);
-        const size_t end =
-            internal::snap(data, length, raw + slice_bytes, opt.format);
-        if (begin >= end) { continue; } // a long document covered by an earlier claim
+        const size_t i = cursor.fetch_add(1, std::memory_order_relaxed);
+        if (i * slice_bytes >= length) { break; }
+        auto piece = internal::slice_at(json, delimiter, slice_bytes, i);
+        if (piece.empty()) { continue; }
 
         simdjson::ondemand::document_stream stream;
-        if (auto e = parser
-                         .iterate_many(data + begin, end - begin, end - begin,
-                                       opt.format)
+        if (auto e = parser.iterate_many(piece, piece.size(), opt.format)
                          .get(stream)) {
           errors[w]++;
           if (!first[w]) { first[w] = e; }

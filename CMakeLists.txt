@@ -35,7 +35,7 @@ include(get_cpm)
 CPMAddPackage(
   NAME simdjson
   GITHUB_REPOSITORY simdjson/simdjson
-  GIT_TAG 93fce66a  # master
+  GIT_TAG 4ee79f7f  # PR #2803
   OPTIONS "SIMDJSON_DEVELOPER_MODE OFF" "BUILD_SHARED_LIBS OFF")
 
 # --- lemire/counters: hardware performance counters (header only) ----------
@@ -73,19 +73,23 @@ set_target_properties(pison PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # not in simdjson. It goes faster when simdjson can skip the tail of a partially
 # read document, which needs stream_format::newline_delimited; detect it rather
 # than require it, so the benchmark still builds against released simdjson.
+set(NEWLINE_DELIMITED_POS -1)
+set(SLICE_AT_POS -1)
 if(EXISTS ${simdjson_SOURCE_DIR}/include/simdjson/base.h)
   file(READ ${simdjson_SOURCE_DIR}/include/simdjson/base.h SIMDJSON_BASE_H)
   string(FIND "${SIMDJSON_BASE_H}" "newline_delimited" NEWLINE_DELIMITED_POS)
-else()
-  set(NEWLINE_DELIMITED_POS -1)
 endif()
-if(NEWLINE_DELIMITED_POS GREATER -1)
+if(EXISTS ${simdjson_SOURCE_DIR}/include/simdjson/padded_string_view.h)
+  file(READ ${simdjson_SOURCE_DIR}/include/simdjson/padded_string_view.h SIMDJSON_PSV_H)
+  string(FIND "${SIMDJSON_PSV_H}" "slice_at" SLICE_AT_POS)
+endif()
+if(NEWLINE_DELIMITED_POS GREATER -1 AND SLICE_AT_POS GREATER -1)
   set(NEWLINE_DELIMITED 1)
   message(STATUS "simdjson has stream_format::newline_delimited")
 else()
   set(NEWLINE_DELIMITED 0)
-  message(STATUS "simdjson lacks stream_format::newline_delimited; "
-                 "the parallel engine will use whitespace_delimited")
+  message(STATUS "simdjson lacks newline_delimited/slice_at; the parallel "
+                 "engine falls back to its own slicing")
 endif()
 
 # --- conventional DOM parsers ----------------------------------------------
