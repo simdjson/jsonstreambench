@@ -46,8 +46,9 @@ struct options {
   std::string query_name;
   std::vector<size_t> threads;
   int reps = 3;
-  size_t slice_kb = 1024;   // parse_many_parallel slice size
+  size_t slice_kb = 64;     // parse_many_parallel slice size
   size_t batch_mb = 16;     // iterate_many batch for the built-in 2-thread mode
+  bool static_partition = true;   // --assign dynamic to override
   bool single_record = false;
   bool verify_only = false;
   size_t dump = 0;
@@ -80,7 +81,8 @@ void usage() {
       "                       (default: inferred from the filename)\n"
       "  --threads a,b,c      thread counts to sweep (default: 1..hw, doubling)\n"
       "  --reps <n>           repetitions per configuration, best wins (default 3)\n"
-      "  --slice-kb <n>       parse_many_parallel slice size (default 1024)\n"
+      "  --slice-kb <n>       parse_many_parallel slice size (default 64)\n"
+      "  --assign <mode>      slice assignment: static (default) or dynamic\n"
       "  --batch-mb <n>       iterate_many batch size (default 16)\n"
       "  --single-record      treat the input as one bulky JSON document\n"
       "  --verify             check that the engines agree, then exit\n"
@@ -105,6 +107,7 @@ bool parse_args(int argc, char **argv, options &o) {
     else if (a == "--reps") { o.reps = atoi(next().c_str()); }
     else if (a == "--slice-kb") { o.slice_kb = strtoull(next().c_str(), nullptr, 10); }
     else if (a == "--batch-mb") { o.batch_mb = strtoull(next().c_str(), nullptr, 10); }
+    else if (a == "--assign") { o.static_partition = (next() == "static"); }
     else if (a == "--single-record") { o.single_record = true; }
     else if (a == "--verify") { o.verify_only = true; }
     else if (a == "--dump") { o.dump = strtoull(next().c_str(), nullptr, 10); }
@@ -163,7 +166,8 @@ void emit(const char *engine, const char *phase, const char *workload_name,
                 s.branch_misses / (double(bytes) / 1024.0),
                 s.cache_misses / (double(bytes) / 1024.0));
   }
-  std::printf(" reps=%d\n", o.reps);
+  std::printf(" spread_pct=%.2f reps=%d", s.spread_pct(), o.reps);
+  std::printf("\n");
   std::fflush(stdout);
 }
 
@@ -480,9 +484,11 @@ int main(int argc, char **argv) {
     if (o.wants_engine("simdjson-parallel"))
     for (const auto &ph : sj_phases) {
       auto s = measure_parallel(o.reps, [&] {
-        sj::run_parallel(data, bytes, q, ph.w, t, o.slice_kb << 10);
+        sj::run_parallel(data, bytes, q, ph.w, t, o.slice_kb << 10,
+                         o.static_partition);
       });
-      extraction e = sj::run_parallel(data, bytes, q, ph.w, t, o.slice_kb << 10);
+      extraction e = sj::run_parallel(data, bytes, q, ph.w, t, o.slice_kb << 10,
+                                      o.static_partition);
       emit("simdjson-parallel", ph.phase, sj::workload_name(ph.w), t, o, label,
            bytes, docs, s, e);
     }
@@ -490,6 +496,7 @@ int main(int argc, char **argv) {
     // on-demand one. Nothing in the decomposition knows what parses a document,
     // so this measures how much of our throughput comes from the slicing and
     // how much from on-demand parsing.
+    dom::static_partition_flag() = o.static_partition;
     for (auto lib : kDomLibraries) {
       if (!dom::available(lib)) { continue; }
       if (!o.wants_engine(dom::engine_name(lib, true))) { continue; }

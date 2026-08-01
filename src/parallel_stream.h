@@ -42,8 +42,12 @@ using simdjson::SUCCESS;
 
 struct options {
   size_t threads = 0;                 // 0 = hardware_concurrency()
-  size_t slice_bytes = 256u << 10;
+  size_t slice_bytes = 64u << 10;
   stream_format format = stream_format::whitespace_delimited;
+  // Each worker owns one contiguous run of slices. The alternative, claiming
+  // the next free slice from a shared counter, scatters a worker's regions
+  // across the input and costs up to 1.55x; it is kept only for reproduction.
+  bool static_partition = true;
 };
 
 template <typename T> class result {
@@ -134,8 +138,18 @@ result<T> parse_many(simdjson::padded_string_view json, F &&extract,
       parser.threaded = false;
       std::vector<T> &shard = out._shards[w];
 
+      const size_t slices = (length + slice_bytes - 1) / slice_bytes;
+      size_t next = slices * w / workers;
+      const size_t last = slices * (w + 1) / workers;
+
       for (;;) {
-        const size_t i = cursor.fetch_add(1, std::memory_order_relaxed);
+        size_t i;
+        if (opt.static_partition) {
+          if (next >= last) { break; }
+          i = next++;
+        } else {
+          i = cursor.fetch_add(1, std::memory_order_relaxed);
+        }
         if (i * slice_bytes >= length) { break; }
         auto piece = internal::slice_at(json, delimiter, slice_bytes, i);
         if (piece.empty()) { continue; }

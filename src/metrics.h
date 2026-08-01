@@ -38,12 +38,21 @@ inline double cpu_seconds() {
 // One measured configuration.
 struct measurement {
   double seconds = 0;      // wall clock, best of the repetitions
+  double worst_seconds = 0; // wall clock of the slowest repetition
   double cpu_seconds = 0;  // CPU time of that same repetition, all threads
   double instructions = 0; // 0 when counters are unavailable or meaningless
   double cycles = 0;
   double branch_misses = 0;
   double cache_misses = 0;
   bool has_counters = false;
+
+  // Spread between the slowest and fastest repetition, relative to the
+  // fastest, in percent. Reporting only the best hides how repeatable a
+  // configuration was, and repeatability varies enormously between machines.
+  double spread_pct() const {
+    if (seconds <= 0 || worst_seconds <= 0) { return 0; }
+    return 100.0 * (worst_seconds - seconds) / seconds;
+  }
 };
 
 // Run `fn` `reps` times and keep the fastest repetition, with per-thread
@@ -60,6 +69,7 @@ template <typename Fn> measurement measure_single(int reps, Fn &&fn) {
     fn();
     counters::event_count c = collector.end();
     double cpu1 = cpu_seconds();
+    if (c.elapsed_sec() > best.worst_seconds) { best.worst_seconds = c.elapsed_sec(); }
     if (c.elapsed_sec() < best.seconds) {
       best.seconds = c.elapsed_sec();
       best.cpu_seconds = cpu1 - cpu0;
@@ -87,6 +97,7 @@ template <typename Fn> measurement measure_parallel(int reps, Fn &&fn) {
     auto t1 = std::chrono::steady_clock::now();
     double cpu1 = cpu_seconds();
     double s = std::chrono::duration<double>(t1 - t0).count();
+    if (s > best.worst_seconds) { best.worst_seconds = s; }
     if (s < best.seconds) {
       best.seconds = s;
       best.cpu_seconds = cpu1 - cpu0;

@@ -33,7 +33,8 @@ extraction run_serial(const char *data, size_t size, query_id q, workload w,
 
 // experimental::parse_many_parallel from simdjson PR #2788.
 extraction run_parallel(const char *data, size_t size, query_id q, workload w,
-                        size_t threads, size_t slice_bytes);
+                        size_t threads, size_t slice_bytes,
+                        bool static_partition = false);
 
 const char *implementation_name();
 

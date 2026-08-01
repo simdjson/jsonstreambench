@@ -230,10 +230,12 @@ extraction run_serial(const char *data, size_t size, query_id q, workload w,
 }
 
 extraction run_parallel(const char *data, size_t size, query_id q, workload w,
-                        size_t threads, size_t slice_bytes) {
+                        size_t threads, size_t slice_bytes,
+                        bool static_partition) {
   parallel::options options;
   options.threads = threads;
   options.slice_bytes = slice_bytes;
+  options.static_partition = static_partition;
 #if JSONBENCH_HAVE_NEWLINE_DELIMITED
   // Our corpus is strictly one document per line, which lets simdjson skip the
   // tail of a partially read document instead of walking it.
