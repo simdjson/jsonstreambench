@@ -309,12 +309,18 @@ int main(int argc, char **argv) {
   // Sizes each DOM worker's arena. One pass over the input, taken once here so
   // that no timed region pays for it.
   const size_t dom_longest = dom::longest_document(data, bytes);
+  // iterate_many's batch must exceed the longest document, or the serial
+  // baseline fails with CAPACITY. Keep the 1 MiB batch the established corpora
+  // were measured with; grow it only when a corpus demands it (the OpenAlex
+  // corpus has records of up to 1.37 MB).
+  const size_t serial_batch =
+      dom_longest > (1u << 20) ? dom_longest + (1u << 20) : (1u << 20);
   bool agree = true;
   extraction pison_ref;
   if (o.wants("verify") || o.dump > 0) {
     pison_ref = pison::run_stream(ptext, tbl, q, pison::workload::query, levels, 1);
     extraction sj_ref =
-        sj::run_serial(data, bytes, q, sj::workload::query, false, 1u << 20);
+        sj::run_serial(data, bytes, q, sj::workload::query, false, serial_batch);
     agree = (pison_ref.matches == sj_ref.matches) &&
             (pison_ref.sum == sj_ref.sum);
     std::printf("# agreement query: pison matches=%llu hash=%llu | "
@@ -328,7 +334,7 @@ int main(int argc, char **argv) {
     extraction pison_dec =
         pison::run_stream(ptext, tbl, q, pison::workload::decode, levels, 1);
     extraction sj_dec =
-        sj::run_serial(data, bytes, q, sj::workload::decode, false, 1u << 20);
+        sj::run_serial(data, bytes, q, sj::workload::decode, false, serial_batch);
     std::printf("# agreement decode: pison matches=%llu hash=%llu | "
                 "simdjson matches=%llu hash=%llu | %s\n",
                 (unsigned long long)pison_dec.matches,
@@ -368,7 +374,7 @@ int main(int argc, char **argv) {
     std::vector<std::string> pt, st;
     pison::run_stream(ptext, tbl, q, pison::workload::query, levels, 1, &pt,
                       o.dump);
-    sj::run_serial(data, bytes, q, sj::workload::query, false, 1u << 20, &st,
+    sj::run_serial(data, bytes, q, sj::workload::query, false, serial_batch, &st,
                    o.dump);
     std::printf("# %-4s %-38s %-38s %s\n", "i", "pison", "simdjson", "same");
     for (size_t i = 0; i < o.dump; i++) {
@@ -409,9 +415,9 @@ int main(int argc, char **argv) {
     }
     for (const auto &ph : sj_phases) {
       auto s = measure_single(o.reps, [&] {
-        sj::run_serial(data, bytes, q, ph.w, false, 1u << 20);
+        sj::run_serial(data, bytes, q, ph.w, false, serial_batch);
       });
-      extraction e = sj::run_serial(data, bytes, q, ph.w, false, 1u << 20);
+      extraction e = sj::run_serial(data, bytes, q, ph.w, false, serial_batch);
       emit("simdjson", ph.phase, sj::workload_name(ph.w), 1, o, label, bytes,
            docs, s, e);
     }
