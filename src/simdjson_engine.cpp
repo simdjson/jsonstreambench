@@ -177,6 +177,20 @@ template <typename Doc> error_code q_wiki(Doc doc, extraction &out, workload w) 
   return SUCCESS;
 }
 
+// $.display_name, $.works_count
+template <typename Doc> error_code q_openalex(Doc doc, extraction &out, workload w) {
+  ondemand::object root;
+  if (auto e = doc.get_object().get(root)) { return e; }
+  for (auto field : root) {
+    std::string_view key;
+    if (auto e = field.unescaped_key().get(key)) { return e; }
+    if (key == "display_name" || key == "works_count") {
+      take(field.value(), out, w);
+    }
+  }
+  return SUCCESS;
+}
+
 template <typename Doc>
 error_code dispatch(Doc doc, extraction &out, query_id q, workload w) {
   if (w == workload::structure) {
@@ -193,6 +207,7 @@ error_code dispatch(Doc doc, extraction &out, query_id q, workload w) {
   case query_id::nspl: return q_nspl(doc, out, w);
   case query_id::walmart: return q_walmart(doc, out, w);
   case query_id::wiki: return q_wiki(doc, out, w);
+  case query_id::openalex: return q_openalex(doc, out, w);
   }
   return SUCCESS;
 }

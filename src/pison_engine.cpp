@@ -262,6 +262,18 @@ void q_wiki(BitmapIterator *iter, extraction &out, workload w) {
   iter->up();
 }
 
+// $.display_name, $.works_count
+void q_openalex(BitmapIterator *iter, extraction &out, workload w) {
+  if (!iter->isObject()) { return; }
+  std::unordered_set<char *> keys;
+  keys.insert(const_cast<char *>("display_name"));
+  keys.insert(const_cast<char *>("works_count"));
+  char *key = nullptr;
+  while ((key = iter->moveToKey(keys)) != nullptr) {
+    take(iter, out, w);
+  }
+}
+
 void run_query(BitmapIterator *iter, extraction &out, query_id q, workload w) {
   switch (q) {
   case query_id::twitter: q_twitter(iter, out, w); break;
@@ -270,6 +282,7 @@ void run_query(BitmapIterator *iter, extraction &out, query_id q, workload w) {
   case query_id::nspl: q_nspl(iter, out, w); break;
   case query_id::walmart: q_walmart(iter, out, w); break;
   case query_id::wiki: q_wiki(iter, out, w); break;
+  case query_id::openalex: q_openalex(iter, out, w); break;
   }
 }
 

@@ -65,7 +65,7 @@ void usage() {
       "usage: jsonbench --dataset <file> [options]\n"
       "  --dataset <path>     JSON-lines file to benchmark (required)\n"
       "  --label <name>       short name for the output (default: filename stem)\n"
-      "  --query <name>       twitter|bestbuy|google_map|nspl|walmart|wiki\n"
+      "  --query <name>       twitter|bestbuy|google_map|nspl|walmart|wiki|openalex\n"
       "                       (default: inferred from the filename)\n"
       "  --threads a,b,c      thread counts to sweep (default: 1..hw, doubling)\n"
       "  --reps <n>           repetitions per configuration, best wins (default 3)\n"

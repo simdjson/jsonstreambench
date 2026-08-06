@@ -22,8 +22,11 @@
 # header, which does not exist in the data rows that form the JSON-lines
 # version, so we define our own two-column extraction for it (see src/common.h).
 #
-# The corpus is roughly 6 GB of JSON-lines plus 6 GB of bulky records. Nothing
-# is committed to this repository.
+# OpenAlex authors (a paper dataset, CC0, hosted on Zenodo) is part of the
+# corpus by default; see the README for its description.
+#
+# The corpus is roughly 6 GB of JSON-lines plus 6 GB of bulky records, plus
+# about 6.1 GB for OpenAlex authors. Nothing is committed to this repository.
 set -euo pipefail
 
 DIR=""
@@ -34,12 +37,32 @@ DRIVE_FOLDER="1PkDEy0zWOkVREfL7VuINI-m9wJe45P2Q"
 log() { printf '\033[1;34m[datasets]\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[1;31m[datasets] ERR:\033[0m %s\n' "$*" >&2; exit 1; }
 
+fetch_openalex() {
+  local out="$DIR/ndjson/openalex_authors.ndjson"
+  if [ -s "$out" ]; then
+    log "openalex authors already present: $out"
+    return 0
+  fi
+  local url="https://zenodo.org/records/21813521/files/openalex-authors.ndjson?download=1"
+  local expected=6419215096
+  command -v curl >/dev/null 2>&1 || die "curl required for OpenAlex"
+  log "downloading OpenAlex authors from Zenodo (6.1 GB) ..."
+  curl -fL --retry 3 -o "$out" "$url" >&2
+  local actual
+  actual="$(stat -c%s "$out")"
+  if [ "$actual" != "$expected" ]; then
+    rm -f "$out"
+    die "OpenAlex download size mismatch (expected $expected, got $actual); the pinned object changed"
+  fi
+  log "openalex authors ready: $(ls -la "$out")"
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --dir)   DIR="${2:?}"; shift 2 ;;
     --build) BUILD="${2:?}"; shift 2 ;;
     --corpus-from) CORPUS_FROM="${2:?}"; shift 2 ;;
-    -h|--help) sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,32p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
 done
@@ -68,6 +91,8 @@ if [ -n "$CORPUS_FROM" ]; then
   ls -la "$DIR/ndjson" >&2
   exit 0
 fi
+
+fetch_openalex
 
 # Fallback: fetch the bulky records from the published Drive folder and derive
 # the JSON-lines form locally.
