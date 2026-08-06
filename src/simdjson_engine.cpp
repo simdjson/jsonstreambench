@@ -217,14 +217,21 @@ error_code dispatch(Doc doc, extraction &out, query_id q, workload w) {
 extraction run_serial(const char *data, size_t size, query_id q, workload w,
                       bool threaded, size_t batch_bytes,
                       std::vector<std::string> *trace, size_t trace_limit) {
+  return run_serial_format(data, size, q, w, threaded, batch_bytes,
+                           stream_format::whitespace_delimited, trace,
+                           trace_limit);
+}
+
+extraction run_serial_format(const char *data, size_t size, query_id q,
+                             workload w, bool threaded, size_t batch_bytes,
+                             stream_format format,
+                             std::vector<std::string> *trace,
+                             size_t trace_limit) {
   ondemand::parser parser;
   parser.threaded = threaded;
   extraction total;
   ondemand::document_stream stream;
-  if (!parser
-           .iterate_many(data, size, batch_bytes,
-                         stream_format::whitespace_delimited)
-           .get(stream)) {
+  if (!parser.iterate_many(data, size, batch_bytes, format).get(stream)) {
     for (auto it = stream.begin(); it != stream.end(); ++it) {
       auto doc = *it;
       extraction one;

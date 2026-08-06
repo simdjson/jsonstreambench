@@ -75,8 +75,8 @@ void usage() {
       "  --verify             check that the engines agree, then exit\n"
       "  --dump <n>           print the first n extracted values from each\n"
       "                       engine side by side, then exit\n"
-      "  --sections <list>    comma list of load,verify,single,scaling,e2e\n"
-      "                       (default: all)\n");
+      "  --sections <list>    comma list of load,verify,single,scaling,e2e,format\n"
+      "                       (default: all but format)\n");
 }
 
 bool parse_args(int argc, char **argv, options &o) {
@@ -441,6 +441,66 @@ int main(int argc, char **argv) {
       extraction de = dom::run_serial(lib, data, bytes, q, dom_longest);
       emit(dom::engine_name(lib, false), "decode", "decode", 1, o, label, bytes,
            docs, ds, de);
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Stream-format overhead (opt-in: sections list contains "format"): the
+  // same documents as comma-delimited input, against newline-delimited, on
+  // the serial path and on simdjson's built-in two-thread pipeline. The comma
+  // form is rebuilt from the record table, so both runs see identical bytes
+  // modulo the separators.
+  // -----------------------------------------------------------------------
+  if (o.wants("format")) {
+    std::string comma;
+    comma.reserve(bytes);
+    for (size_t i = 0; i < tbl.count(); i++) {
+      size_t len = tbl.length[i];
+      while (len > 0 && (ptext[tbl.offset[i] + len - 1] == '\n' ||
+                         ptext[tbl.offset[i] + len - 1] == '\r')) {
+        len--;
+      }
+      comma.append(ptext + tbl.offset[i], len);
+      comma.push_back(',');
+    }
+    comma.append(64, '\0');
+    struct encoding {
+      const char *name;
+      const char *data;
+      size_t size;
+      simdjson::stream_format format;
+    };
+    const encoding encodings[] = {
+        {"whitespace", data, bytes,
+         simdjson::stream_format::whitespace_delimited},
+        {"comma", comma.data(), comma.size(),
+         simdjson::stream_format::comma_delimited},
+    };
+    // Measure one encoding at one thread count. The threaded run skips the
+    // per-thread performance counters (see the methodology section of the
+    // paper), hence the two timing helpers.
+    auto measure_encoding = [&](const encoding &enc,
+                                bool threaded) -> measurement {
+      if (threaded) {
+        return measure_parallel(o.reps, [&] {
+          sj::run_serial_format(enc.data, enc.size, q, sj::workload::query,
+                                threaded, serial_batch, enc.format);
+        });
+      }
+      return measure_single(o.reps, [&] {
+        sj::run_serial_format(enc.data, enc.size, q, sj::workload::query,
+                              threaded, serial_batch, enc.format);
+      });
+    };
+    for (bool threaded : {false, true}) {
+      for (const encoding &enc : encodings) {
+        measurement s = measure_encoding(enc, threaded);
+        extraction e = sj::run_serial_format(
+            enc.data, enc.size, q, sj::workload::query, threaded, serial_batch,
+            enc.format);
+        emit("simdjson-format", "format", enc.name, threaded ? 2 : 1, o, label,
+             bytes, docs, s, e);
+      }
     }
   }
 

@@ -2,6 +2,7 @@
 #define JSONBENCH_SIMDJSON_ENGINE_H
 
 #include "common.h"
+#include "simdjson.h"
 
 #include <cstddef>
 
@@ -30,6 +31,14 @@ extraction run_serial(const char *data, size_t size, query_id q, workload w,
                       bool threaded, size_t batch_bytes,
                       std::vector<std::string> *trace = nullptr,
                       size_t trace_limit = 0);
+
+// As run_serial, but with an explicit stream format (used by the stream-format
+// overhead study: whitespace_delimited vs comma_delimited on the same records).
+extraction run_serial_format(const char *data, size_t size, query_id q,
+                             workload w, bool threaded, size_t batch_bytes,
+                             simdjson::stream_format format,
+                             std::vector<std::string> *trace = nullptr,
+                             size_t trace_limit = 0);
 
 // experimental::parse_many_parallel from simdjson PR #2788.
 extraction run_parallel(const char *data, size_t size, query_id q, workload w,

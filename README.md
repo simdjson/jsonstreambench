@@ -28,11 +28,15 @@ jsonbench --dataset <file.ndjson> [options]
   --threads a,b,c      thread counts to sweep (default: 1..hw, doubling)
   --reps <n>           repetitions per configuration, best wins (default 3)
   --slice-kb <n>       parse_many_parallel slice size (default 1024)
-  --sections <list>    load,verify,single,scaling,e2e (default: all)
+  --sections <list>    load,verify,single,scaling,e2e,format (default: all
+                       but format)
   --single-record      treat the input as one bulky JSON document
   --verify             check that the engines agree, then exit
   --dump <n>           print the first n extracted values from each engine
 ```
+
+The `format` section compares comma-delimited against newline-delimited
+encoding of the same records, serially and on simdjson's two-thread pipeline.
 
 Output is one `RESULT key=value ...` line per measured configuration.
 
