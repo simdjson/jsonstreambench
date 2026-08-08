@@ -65,7 +65,7 @@ void usage() {
       "usage: jsonbench --dataset <file> [options]\n"
       "  --dataset <path>     JSON-lines file to benchmark (required)\n"
       "  --label <name>       short name for the output (default: filename stem)\n"
-      "  --query <name>       twitter|bestbuy|google_map|nspl|walmart|wiki\n"
+      "  --query <name>       twitter|bestbuy|google_map|nspl|walmart|wiki|openalex\n"
       "                       (default: inferred from the filename)\n"
       "  --threads a,b,c      thread counts to sweep (default: 1..hw, doubling)\n"
       "  --reps <n>           repetitions per configuration, best wins (default 3)\n"
@@ -75,8 +75,8 @@ void usage() {
       "  --verify             check that the engines agree, then exit\n"
       "  --dump <n>           print the first n extracted values from each\n"
       "                       engine side by side, then exit\n"
-      "  --sections <list>    comma list of load,verify,single,scaling,e2e\n"
-      "                       (default: all)\n");
+      "  --sections <list>    comma list of load,verify,single,scaling,e2e,format\n"
+      "                       (default: all but format)\n");
 }
 
 bool parse_args(int argc, char **argv, options &o) {
@@ -309,12 +309,18 @@ int main(int argc, char **argv) {
   // Sizes each DOM worker's arena. One pass over the input, taken once here so
   // that no timed region pays for it.
   const size_t dom_longest = dom::longest_document(data, bytes);
+  // iterate_many's batch must exceed the longest document, or the serial
+  // baseline fails with CAPACITY. Keep the 1 MiB batch the established corpora
+  // were measured with; grow it only when a corpus demands it (the OpenAlex
+  // corpus has records of up to 1.37 MB).
+  const size_t serial_batch =
+      dom_longest > (1u << 20) ? dom_longest + (1u << 20) : (1u << 20);
   bool agree = true;
   extraction pison_ref;
   if (o.wants("verify") || o.dump > 0) {
     pison_ref = pison::run_stream(ptext, tbl, q, pison::workload::query, levels, 1);
     extraction sj_ref =
-        sj::run_serial(data, bytes, q, sj::workload::query, false, 1u << 20);
+        sj::run_serial(data, bytes, q, sj::workload::query, false, serial_batch);
     agree = (pison_ref.matches == sj_ref.matches) &&
             (pison_ref.sum == sj_ref.sum);
     std::printf("# agreement query: pison matches=%llu hash=%llu | "
@@ -328,7 +334,7 @@ int main(int argc, char **argv) {
     extraction pison_dec =
         pison::run_stream(ptext, tbl, q, pison::workload::decode, levels, 1);
     extraction sj_dec =
-        sj::run_serial(data, bytes, q, sj::workload::decode, false, 1u << 20);
+        sj::run_serial(data, bytes, q, sj::workload::decode, false, serial_batch);
     std::printf("# agreement decode: pison matches=%llu hash=%llu | "
                 "simdjson matches=%llu hash=%llu | %s\n",
                 (unsigned long long)pison_dec.matches,
@@ -368,7 +374,7 @@ int main(int argc, char **argv) {
     std::vector<std::string> pt, st;
     pison::run_stream(ptext, tbl, q, pison::workload::query, levels, 1, &pt,
                       o.dump);
-    sj::run_serial(data, bytes, q, sj::workload::query, false, 1u << 20, &st,
+    sj::run_serial(data, bytes, q, sj::workload::query, false, serial_batch, &st,
                    o.dump);
     std::printf("# %-4s %-38s %-38s %s\n", "i", "pison", "simdjson", "same");
     for (size_t i = 0; i < o.dump; i++) {
@@ -409,9 +415,9 @@ int main(int argc, char **argv) {
     }
     for (const auto &ph : sj_phases) {
       auto s = measure_single(o.reps, [&] {
-        sj::run_serial(data, bytes, q, ph.w, false, 1u << 20);
+        sj::run_serial(data, bytes, q, ph.w, false, serial_batch);
       });
-      extraction e = sj::run_serial(data, bytes, q, ph.w, false, 1u << 20);
+      extraction e = sj::run_serial(data, bytes, q, ph.w, false, serial_batch);
       emit("simdjson", ph.phase, sj::workload_name(ph.w), 1, o, label, bytes,
            docs, s, e);
     }
@@ -435,6 +441,66 @@ int main(int argc, char **argv) {
       extraction de = dom::run_serial(lib, data, bytes, q, dom_longest);
       emit(dom::engine_name(lib, false), "decode", "decode", 1, o, label, bytes,
            docs, ds, de);
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Stream-format overhead (opt-in: sections list contains "format"): the
+  // same documents as comma-delimited input, against newline-delimited, on
+  // the serial path and on simdjson's built-in two-thread pipeline. The comma
+  // form is rebuilt from the record table, so both runs see identical bytes
+  // modulo the separators.
+  // -----------------------------------------------------------------------
+  if (o.wants("format")) {
+    std::string comma;
+    comma.reserve(bytes);
+    for (size_t i = 0; i < tbl.count(); i++) {
+      size_t len = tbl.length[i];
+      while (len > 0 && (ptext[tbl.offset[i] + len - 1] == '\n' ||
+                         ptext[tbl.offset[i] + len - 1] == '\r')) {
+        len--;
+      }
+      comma.append(ptext + tbl.offset[i], len);
+      comma.push_back(',');
+    }
+    comma.append(64, '\0');
+    struct encoding {
+      const char *name;
+      const char *data;
+      size_t size;
+      simdjson::stream_format format;
+    };
+    const encoding encodings[] = {
+        {"whitespace", data, bytes,
+         simdjson::stream_format::whitespace_delimited},
+        {"comma", comma.data(), comma.size(),
+         simdjson::stream_format::comma_delimited},
+    };
+    // Measure one encoding at one thread count. The threaded run skips the
+    // per-thread performance counters (see the methodology section of the
+    // paper), hence the two timing helpers.
+    auto measure_encoding = [&](const encoding &enc,
+                                bool threaded) -> measurement {
+      if (threaded) {
+        return measure_parallel(o.reps, [&] {
+          sj::run_serial_format(enc.data, enc.size, q, sj::workload::query,
+                                threaded, serial_batch, enc.format);
+        });
+      }
+      return measure_single(o.reps, [&] {
+        sj::run_serial_format(enc.data, enc.size, q, sj::workload::query,
+                              threaded, serial_batch, enc.format);
+      });
+    };
+    for (bool threaded : {false, true}) {
+      for (const encoding &enc : encodings) {
+        measurement s = measure_encoding(enc, threaded);
+        extraction e = sj::run_serial_format(
+            enc.data, enc.size, q, sj::workload::query, threaded, serial_batch,
+            enc.format);
+        emit("simdjson-format", "format", enc.name, threaded ? 2 : 1, o, label,
+             bytes, docs, s, e);
+      }
     }
   }
 

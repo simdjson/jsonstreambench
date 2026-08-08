@@ -23,18 +23,23 @@ single dependency checkout across build trees.
 
 ```
 jsonbench --dataset <file.ndjson> [options]
-  --query <name>       twitter|bestbuy|google_map|nspl|walmart|wiki
+  --query <name>       twitter|bestbuy|google_map|nspl|walmart|wiki|openalex
                        (default: inferred from the filename)
   --threads a,b,c      thread counts to sweep (default: 1..hw, doubling)
   --reps <n>           repetitions per configuration, best wins (default 3)
   --slice-kb <n>       parse_many_parallel slice size (default 1024)
-  --sections <list>    load,verify,single,scaling,e2e (default: all)
+  --sections <list>    load,verify,single,scaling,e2e,format (default: all
+                       but format)
   --single-record      treat the input as one bulky JSON document
   --verify             check that the engines agree, then exit
   --dump <n>           print the first n extracted values from each engine
 ```
 
+The `format` section compares comma-delimited against newline-delimited
+encoding of the same records, serially and on simdjson's two-thread pipeline.
+
 Output is one `RESULT key=value ...` line per measured configuration.
+
 
 ## How the comparison is kept fair
 
@@ -90,8 +95,14 @@ per gigabyte from `getrusage`, which does aggregate all threads.
 It downloads the six bulky records from the public collection the Pison and
 cuJSON papers use, then derives the JSON-lines form of each with `make_ndjson`,
 which minifies every element of the dataset's dominating array onto its own line
-(`tweets`, `data`, `products`, `items`, `items`, `items`). Roughly 12 GB of disk
+(`tweets`, `data`, `products`, `items`, `items`, `items`). Roughly 18 GB of disk
 and a `pip install gdown`. The result is `~/jsonbench/ndjson/<dataset>.ndjson`.
+
+OpenAlex authors joins the corpus the same way: the 232,330 author records
+updated on 2026-03-30 in the OpenAlex snapshot (CC0, about 6.1 GB, largest
+record about 1.37 MB), hosted on Zenodo and pinned by record and size, with
+query `$.display_name, $.works_count`. With `--corpus-from` the peer's copy
+is reused when present, exactly as for the six cuJSON datasets.
 
 The collection publishes all six datasets as bulky records but only two of the
 six JSON-lines files, which is why the rest are derived. On the two published in

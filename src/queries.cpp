@@ -12,6 +12,7 @@ const char *query_name(query_id q) {
   case query_id::nspl: return "nspl";
   case query_id::walmart: return "walmart";
   case query_id::wiki: return "wiki";
+  case query_id::openalex: return "openalex";
   }
   return "?";
 }
@@ -23,6 +24,7 @@ bool query_from_name(const std::string &s, query_id &out) {
   if (s == "nspl") { out = query_id::nspl; return true; }
   if (s == "walmart") { out = query_id::walmart; return true; }
   if (s == "wiki") { out = query_id::wiki; return true; }
+  if (s == "openalex") { out = query_id::openalex; return true; }
   return false;
 }
 
@@ -46,6 +48,7 @@ bool query_from_name(const std::string &s, query_id &out) {
 //   nspl        $[8], $[9]                                    1        1
 //   walmart     $.bestMarketplacePrice.price, $.name          2        2
 //   wiki        $.claims.P150[*].mainsnak.property            4        5
+//   openalex    $.display_name, $.works_count                 1        1
 int query_levels(query_id q) {
   switch (q) {
   case query_id::twitter: return 2;
@@ -54,6 +57,7 @@ int query_levels(query_id q) {
   case query_id::nspl: return 1;
   case query_id::walmart: return 2;
   case query_id::wiki: return 5;
+  case query_id::openalex: return 1;
   }
   return 22; // MAX_LEVEL: always safe, never fast
 }
@@ -61,7 +65,8 @@ int query_levels(query_id q) {
 bool query_from_path(const std::string &path, query_id &out) {
   // Longest names first so "google_map" wins over a bare "google".
   static const char *names[] = {"google_map", "bestbuy", "twitter",
-                                "walmart",    "wiki",    "nspl"};
+                                "walmart",    "wiki",    "nspl",
+                                "openalex"};
   for (const char *n : names) {
     if (path.find(n) != std::string::npos) { return query_from_name(n, out); }
   }
