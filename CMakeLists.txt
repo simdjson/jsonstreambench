@@ -35,7 +35,7 @@ include(get_cpm)
 CPMAddPackage(
   NAME simdjson
   GITHUB_REPOSITORY simdjson/simdjson
-  GIT_TAG 4ee79f7f  # PR #2803
+  GIT_TAG 9b89b82d  # PR #2803, as merged to master
   OPTIONS "SIMDJSON_DEVELOPER_MODE OFF" "BUILD_SHARED_LIBS OFF")
 
 # --- lemire/counters: hardware performance counters (header only) ----------
