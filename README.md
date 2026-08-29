@@ -98,98 +98,48 @@ per gigabyte from `getrusage`, which does aggregate all threads.
 
 ## The parallel driver
 
-`src/parallel_stream.h` is this repository's own driver, not a simdjson API.
-An earlier version of it lived in simdjson as an experimental header
+`src/parallel_stream.h` is this repository's own driver, not a simdjson API. An
+earlier version lived in simdjson as an experimental header
 ([PR #2788](https://github.com/simdjson/simdjson/pull/2788)); it belongs in user
-code instead. Nothing in it needs to be inside the library — it is a slicing
-rule plus a thread pool over the public `iterate_many` interface — and keeping
-it out means a caller can adapt the decomposition to their own pipeline rather
-than accept ours. simdjson is therefore pinned to an ordinary master commit
-rather than to a patched branch, and the benchmark measures a decomposition
-anyone can write.
+code instead, because nothing in it needs to be inside the library — it is a
+slicing rule plus a thread pool over the public `iterate_many` interface — and
+keeping it out means a caller can adapt the decomposition to their own pipeline
+rather than accept ours. simdjson is therefore pinned to an ordinary master
+commit rather than a patched branch. `src/dom_parallel.h` applies the same rule
+to yyjson, RapidJSON, Boost.JSON and nlohmann: the slicing does not know what
+parses a document, and running the conventional parsers under it is how that
+claim is checked rather than asserted.
 
 The rule: cut the input into fixed-size slices, snap both ends forward to the
 next delimiter so slices abut and no document is split, and give each worker its
-own parser and its own output vector. Nothing is shared on the hot path and no
-lock is taken. Results come back as one vector per worker, so values keep their
-order within a worker but not across the input.
+own parser and its own output vector. Nothing is shared on the hot path, and
+values keep their order within a worker but not across the input. This needs a
+delimiter that cannot occur inside a JSON value — a line feed for NDJSON, a
+record separator (0x1E) for RFC 7464 — so comma-delimited input cannot be sliced
+this way at all, its top-level commas being findable only by a serial structural
+scan. Our corpus is strictly one document per line, so simdjson is told that too
+with `stream_format::newline_delimited`, which lets it skip the tail of a
+partially read document rather than walk it. That format and
+`simdjson::slice_at` are detected at configure time rather than required: every
+simdjson *release* lacks both, since releases are cut from a `4.6.x` branch, and
+against one the driver falls back to slicing with `memchr`.
 
-This needs a delimiter that cannot occur inside a JSON value: a line feed for
-NDJSON, or a record separator (0x1E) for RFC 7464. Comma-delimited input cannot
-be sliced this way at all, because a top-level comma is only found by a serial
-structural scan.
-
-The corpus is strictly one document per line — the same structure Pison is
-handed as its record table — so simdjson is told that too, with
-`stream_format::newline_delimited`, which lets it skip the tail of a partially
-read document instead of walking its structural characters.
-
-That format and `simdjson::slice_at` are detected at configure time rather than
-required, so the tree still builds against a simdjson that has neither; it then
-falls back to slicing with `memchr`. That is not a corner case: simdjson cuts
-releases from a `4.6.x` branch, and neither feature has shipped in one, so
-*every* release takes the fallback. The pin is a master commit for exactly this
-reason, and the numbers below are master's.
-
-`src/dom_parallel.h` applies the same rule to yyjson, RapidJSON, Boost.JSON and
-nlohmann. The slicing does not know what parses a document, and running the
-conventional parsers under it is how that claim is checked rather than asserted.
-
-Two knobs control it, and they interact:
-
-* `--slice-kb` (default 64). Smaller slices balance better and hold less live
-  data per worker.
-* `--assign` (default `static`). Under `static`, each worker owns one contiguous
-  run of slices and walks it forward. Under `dynamic`, workers claim the next
-  free slice from a shared atomic counter, which scatters a worker's regions
-  across the input — at 128 threads and 64 KB slices, consecutive regions sit
-  8 MB apart.
-
-The defaults changed when this driver landed: the slice size was 1024 KB and the
-assignment was dynamic. **Numbers collected before that change are not
-comparable to numbers collected after it.** What follows is the measurement that
-motivated it, on 2× Xeon Gold 6548N (64 physical cores, 128 threads), best of
-three runs of ten repetitions, GB/s on the `query` phase.
-
-Slice size is the larger effect, and it is not a plateau: at 128 threads a
-1024 KB slice is a third slower than a 64 KB one, because 128 workers × 1 MB of
-live data no longer fits where it needs to. Assignment then decides how far down
-the slice size can be pushed before a shared counter becomes the bottleneck.
-
-| nspl, 128 threads | 8 KB | 16 KB | 32 KB | 64 KB | 256 KB | 1024 KB |
-|---|---|---|---|---|---|---|
-| `--assign static` | 58.3 | 57.9 | 61.8 | 55.6 | 57.8 | 36.4 |
-| `--assign dynamic` | 27.2 | 43.1 | 46.9 | 62.8 | 56.2 | 35.9 |
-
-Static assignment is what makes the choice of slice size stop mattering: it holds
-55–62 GB/s across two orders of magnitude, while dynamic loses more than half its
-throughput once a slice is small enough that workers contend on the counter.
-
-At the 64 KB default the two policies are close on most of the corpus, and the
-gap opens with thread count. At 128 threads:
-
-| | TT | BB | GMD | NSPL | WM | WP |
-|---|---|---|---|---|---|---|
-| `static` | 84.2 | 86.4 | 73.6 | 56.1 | 92.6 | 84.4 |
-| `dynamic` | 77.6 | 80.6 | 46.8 | 61.9 | 85.2 | 65.3 |
-
-Google Maps is the case that decides it, at 1.57×; Wikipedia follows at 1.29×.
-Both have highly variable document sizes, which is where a worker's regions
-being scattered across the input costs the most. NSPL is the one dataset that prefers
-dynamic, by 9%: its documents are small and uniform, so there is nothing for
-locality to buy and the counter is never hot. Static is the default because its
-worst case is that 9% while its best case is 1.57×, and because it removes the
-small-slice cliff entirely.
-
-Both defaults were tuned on the six Pison datasets, whose documents are small.
-They do not transfer to a corpus of bulky records: when a document is much
-larger than a slice, every slice that starts inside it scans forward to the
-document's end before finding it has nothing to do, so the driver rescans the
-body once per overlapping slice. On synthetic input with 1.36 MB documents --
-the size of the largest OpenAlex author record -- 64 KB slices run at 2.4 GB/s
-against 6.0 GB/s for 1024 KB, and 16 KB slices at 0.8 GB/s. Results stay
-correct at every size; only throughput suffers. Raise `--slice-kb` above the
-longest document for such a corpus.
+Two knobs control it, and the right values depend on the corpus rather than on
+the machine. `--assign` (default `static`) gives each worker one contiguous run
+of slices; `dynamic` instead has workers claim the next free slice from a shared
+counter, which scatters their regions across the input. `--slice-kb` (default
+64) sets the slice. Both changed when this driver landed — they were 1024 KB and
+`dynamic` — so earlier numbers are not comparable. On nspl at 128 threads static
+holds 60–63 GB/s from 8 KB to 64 KB while dynamic collapses to 26 GB/s at 8 KB;
+across the six Pison datasets at the 64 KB default, static wins on five — Google
+Maps by 1.55×, Wikipedia by 1.32× — losing 2% only on Walmart, within
+run-to-run spread. Both defaults
+were tuned on those datasets, whose documents are small, and **they do not
+transfer to a corpus of bulky records**: a document larger than a slice is
+rescanned once per overlapping slice, so on synthetic input of 1.36 MB documents
+— the largest OpenAlex author record — 64 KB slices run at 2.4 GB/s against
+6.0 GB/s for 1024 KB. Results stay correct at every size; only throughput
+suffers. Raise `--slice-kb` above the longest document for such a corpus.
 
 ## Corpus
 
