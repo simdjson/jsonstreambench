@@ -127,18 +127,15 @@ against one the driver falls back to slicing with `memchr`.
 Two knobs control it, and the right values depend on the corpus rather than on
 the machine. `--assign` (default `static`) gives each worker one contiguous run
 of slices; `dynamic` instead has workers claim the next free slice from a shared
-counter, which scatters their regions across the input. `--slice-kb` (default
-64) sets the slice. Both changed when this driver landed — they were 1024 KB and
-`dynamic` — so earlier numbers are not comparable. On nspl at 128 threads static
-holds 60–63 GB/s from 8 KB to 64 KB while dynamic collapses to 26 GB/s at 8 KB;
-across the six Pison datasets at the 64 KB default, static wins on five — Google
-Maps by 1.55×, Wikipedia by 1.32× — losing 2% only on Walmart, within
-run-to-run spread. Both defaults
-were tuned on those datasets, whose documents are small, and **they do not
-transfer to a corpus of bulky records**: a document larger than a slice is
-rescanned once per overlapping slice, so on synthetic input of 1.36 MB documents
-— the largest OpenAlex author record — 64 KB slices run at 2.4 GB/s against
-6.0 GB/s for 1024 KB. Results stay correct at every size; only throughput
+counter, which scatters their regions across the input and, once slices are
+small enough for the counter to be contended, costs a large fraction of the
+throughput. `--slice-kb` (default 64) sets the slice. Both changed when this
+driver landed — they were 1024 KB and `dynamic` — so numbers collected before
+that are not comparable to numbers collected after it. Both were also tuned on
+the six Pison datasets, whose documents are small, and **they do not transfer to
+a corpus of bulky records**: a document larger than a slice is rescanned once
+per overlapping slice, which costs throughput in proportion to the square of the
+document over the slice. Results stay correct at every size; only throughput
 suffers. Raise `--slice-kb` above the longest document for such a corpus.
 
 ## Corpus
