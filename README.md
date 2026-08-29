@@ -1,9 +1,8 @@
 # jsonstreambench
 
 A fair benchmark for parsing **streams of JSON documents**, comparing
-[simdjson](https://github.com/simdjson/simdjson) — including the experimental
-parallel stream parser of
-[PR #2788](https://github.com/simdjson/simdjson/pull/2788) — against
+[simdjson](https://github.com/simdjson/simdjson) — driven across many threads by
+the slicing rule in `src/parallel_stream.h` — against
 [Pison](https://github.com/AutomataLab/Pison), on Pison's own corpus and
 queries.
 
@@ -27,14 +26,27 @@ jsonbench --dataset <file.ndjson> [options]
                        (default: inferred from the filename)
   --threads a,b,c      thread counts to sweep (default: 1..hw, doubling)
   --reps <n>           repetitions per configuration, best wins (default 3)
-  --slice-kb <n>       parse_many_parallel slice size (default 1024)
+  --slice-kb <n>       parallel slice size (default 64)
+  --assign <mode>      slice assignment: static (default) or dynamic
+  --batch-mb <n>       iterate_many batch size (default 16)
   --sections <list>    load,verify,single,scaling,e2e (default: all)
   --single-record      treat the input as one bulky JSON document
   --verify             check that the engines agree, then exit
   --dump <n>           print the first n extracted values from each engine
+  --engine-only <name> run only this engine in the scaling section
+  --impl <name>        force a simdjson kernel (haswell, icelake, ...)
+  --levels <n>         override Pison's level_num
 ```
 
-Output is one `RESULT key=value ...` line per measured configuration.
+Output is one `RESULT key=value ...` line per measured configuration. Each
+carries `spread_pct`, the gap between the slowest and fastest repetition
+relative to the fastest: only the best repetition is reported, and how
+repeatable it was varies enormously between machines.
+
+`--engine-only` narrows the scaling section to one engine, which is what makes
+an aggregate profile interpretable — `perf stat -a` cannot attribute a counter
+to an engine when several run in the same process. Pair it with
+`--sections scaling` so nothing else runs either.
 
 ## How the comparison is kept fair
 
@@ -78,6 +90,91 @@ Hardware counters are collected for single-threaded configurations only.
 engines spawn workers internally, so a multi-threaded reading would be wrong
 rather than noisy. Parallel runs report wall-clock throughput plus CPU seconds
 per gigabyte from `getrusage`, which does aggregate all threads.
+
+## The parallel driver
+
+`src/parallel_stream.h` is this repository's own driver, not a simdjson API.
+An earlier version of it lived in simdjson as an experimental header
+([PR #2788](https://github.com/simdjson/simdjson/pull/2788)); it belongs in user
+code instead. Nothing in it needs to be inside the library — it is a slicing
+rule plus a thread pool over the public `iterate_many` interface — and keeping
+it out means a caller can adapt the decomposition to their own pipeline rather
+than accept ours. simdjson is therefore pinned to an ordinary master commit
+rather than to a patched branch, and the benchmark measures a decomposition
+anyone can write.
+
+The rule: cut the input into fixed-size slices, snap both ends forward to the
+next delimiter so slices abut and no document is split, and give each worker its
+own parser and its own output vector. Nothing is shared on the hot path and no
+lock is taken. Results come back as one vector per worker, so values keep their
+order within a worker but not across the input.
+
+This needs a delimiter that cannot occur inside a JSON value: a line feed for
+NDJSON, or a record separator (0x1E) for RFC 7464. Comma-delimited input cannot
+be sliced this way at all, because a top-level comma is only found by a serial
+structural scan.
+
+The corpus is strictly one document per line — the same structure Pison is
+handed as its record table — so simdjson is told that too, with
+`stream_format::newline_delimited`, which lets it skip the tail of a partially
+read document instead of walking its structural characters.
+
+That format and `simdjson::slice_at` are detected at configure time rather than
+required, so the tree still builds against a simdjson that has neither; it then
+falls back to slicing with `memchr`. That is not a corner case: simdjson cuts
+releases from a `4.6.x` branch, and neither feature has shipped in one, so
+*every* release takes the fallback. The pin is a master commit for exactly this
+reason, and the numbers below are master's.
+
+`src/dom_parallel.h` applies the same rule to yyjson, RapidJSON, Boost.JSON and
+nlohmann. The slicing does not know what parses a document, and running the
+conventional parsers under it is how that claim is checked rather than asserted.
+
+Two knobs control it, and they interact:
+
+* `--slice-kb` (default 64). Smaller slices balance better and hold less live
+  data per worker.
+* `--assign` (default `static`). Under `static`, each worker owns one contiguous
+  run of slices and walks it forward. Under `dynamic`, workers claim the next
+  free slice from a shared atomic counter, which scatters a worker's regions
+  across the input — at 128 threads and 64 KB slices, consecutive regions sit
+  8 MB apart.
+
+The defaults changed when this driver landed: the slice size was 1024 KB and the
+assignment was dynamic. **Numbers collected before that change are not
+comparable to numbers collected after it.** What follows is the measurement that
+motivated it, on 2× Xeon Gold 6548N (64 physical cores, 128 threads), best of
+three runs of ten repetitions, GB/s on the `query` phase.
+
+Slice size is the larger effect, and it is not a plateau: at 128 threads a
+1024 KB slice is a third slower than a 64 KB one, because 128 workers × 1 MB of
+live data no longer fits where it needs to. Assignment then decides how far down
+the slice size can be pushed before a shared counter becomes the bottleneck.
+
+| nspl, 128 threads | 8 KB | 16 KB | 32 KB | 64 KB | 256 KB | 1024 KB |
+|---|---|---|---|---|---|---|
+| `--assign static` | 58.3 | 57.9 | 61.8 | 55.6 | 57.8 | 36.4 |
+| `--assign dynamic` | 27.2 | 43.1 | 46.9 | 62.8 | 56.2 | 35.9 |
+
+Static assignment is what makes the choice of slice size stop mattering: it holds
+55–62 GB/s across two orders of magnitude, while dynamic loses more than half its
+throughput once a slice is small enough that workers contend on the counter.
+
+At the 64 KB default the two policies are close on most of the corpus, and the
+gap opens with thread count. At 128 threads:
+
+| | TT | BB | GMD | NSPL | WM | WP |
+|---|---|---|---|---|---|---|
+| `static` | 84.2 | 86.4 | 73.6 | 56.1 | 92.6 | 84.4 |
+| `dynamic` | 77.6 | 80.6 | 46.8 | 61.9 | 85.2 | 65.3 |
+
+Google Maps is the case that decides it, at 1.57×; Wikipedia follows at 1.29×.
+Both have highly variable document sizes, which is where a worker's regions
+being scattered across the input costs the most. NSPL is the one dataset that prefers
+dynamic, by 9%: its documents are small and uniform, so there is nothing for
+locality to buy and the counter is never hot. Static is the default because its
+worst case is that 9% while its best case is 1.57×, and because it removes the
+small-slice cliff entirely.
 
 ## Corpus
 
