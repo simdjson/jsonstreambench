@@ -31,10 +31,10 @@ extraction run_serial(const char *data, size_t size, query_id q, workload w,
                       std::vector<std::string> *trace = nullptr,
                       size_t trace_limit = 0);
 
-// experimental::parse_many_parallel from simdjson PR #2788.
+// This repository's own parallel stream driver, src/parallel_stream.h.
 extraction run_parallel(const char *data, size_t size, query_id q, workload w,
                         size_t threads, size_t slice_bytes,
-                        bool static_partition = false);
+                        bool static_partition = true);
 
 const char *implementation_name();
 

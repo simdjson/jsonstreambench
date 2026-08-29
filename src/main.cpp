@@ -1,5 +1,5 @@
-// jsonbench -- simdjson (incl. PR #2788 parse_many_parallel) vs Pison on a
-// stream of JSON documents.
+// jsonbench -- simdjson (driven in parallel by src/parallel_stream.h) vs Pison
+// on a stream of JSON documents.
 //
 //   jsonbench --dataset twitter_small_records.json [options]
 //
@@ -46,7 +46,7 @@ struct options {
   std::string query_name;
   std::vector<size_t> threads;
   int reps = 3;
-  size_t slice_kb = 64;     // parse_many_parallel slice size
+  size_t slice_kb = 64;     // parallel::parse_many slice size
   size_t batch_mb = 16;     // iterate_many batch for the built-in 2-thread mode
   bool static_partition = true;   // --assign dynamic to override
   bool single_record = false;
@@ -57,9 +57,11 @@ struct options {
   // scripts narrow this so a slice-size or thread-count study does not re-run
   // the loader and agreement work every time.
   std::string sections = "load,verify,single,scaling,e2e";
-  // Restrict the run to one engine. Aggregate profilers (perf stat -a) cannot
-  // attribute counters to an engine when several run in the same process, so
-  // isolating one is the only way to ask "what is *this* engine waiting on".
+  // Restrict the scaling section to one engine. Aggregate profilers
+  // (perf stat -a) cannot attribute counters to an engine when several run in
+  // the same process, so isolating one is the only way to ask "what is *this*
+  // engine waiting on". The other sections are unaffected: pair this with
+  // --sections scaling so nothing else runs either.
   std::string only_engine;
   // Force a simdjson kernel (haswell, icelake, ...) instead of runtime dispatch.
   std::string impl;
@@ -81,7 +83,7 @@ void usage() {
       "                       (default: inferred from the filename)\n"
       "  --threads a,b,c      thread counts to sweep (default: 1..hw, doubling)\n"
       "  --reps <n>           repetitions per configuration, best wins (default 3)\n"
-      "  --slice-kb <n>       parse_many_parallel slice size (default 64)\n"
+      "  --slice-kb <n>       parallel slice size (default 64)\n"
       "  --assign <mode>      slice assignment: static (default) or dynamic\n"
       "  --batch-mb <n>       iterate_many batch size (default 16)\n"
       "  --single-record      treat the input as one bulky JSON document\n"
@@ -90,8 +92,9 @@ void usage() {
       "                       engine side by side, then exit\n"
       "  --sections <list>    comma list of load,verify,single,scaling,e2e\n"
       "                       (default: all)\n"
-      "  --engine-only <name> run only this engine (e.g. simdjson-parallel,\n"
-      "                       yyjson-parallel); for profiling one engine alone\n"
+      "  --engine-only <name> restrict the scaling section to this engine (e.g.\n"
+      "                       simdjson-parallel); pair with --sections scaling\n"
+      "                       to profile one engine alone\n"
       "  --impl <name>        force a simdjson kernel (haswell, icelake, ...)\n");
 }
 
@@ -107,7 +110,15 @@ bool parse_args(int argc, char **argv, options &o) {
     else if (a == "--reps") { o.reps = atoi(next().c_str()); }
     else if (a == "--slice-kb") { o.slice_kb = strtoull(next().c_str(), nullptr, 10); }
     else if (a == "--batch-mb") { o.batch_mb = strtoull(next().c_str(), nullptr, 10); }
-    else if (a == "--assign") { o.static_partition = (next() == "static"); }
+    else if (a == "--assign") {
+      const std::string mode = next();
+      if (mode != "static" && mode != "dynamic") {
+        std::fprintf(stderr, "--assign takes static or dynamic, not '%s'\n",
+                     mode.c_str());
+        return false;
+      }
+      o.static_partition = (mode == "static");
+    }
     else if (a == "--single-record") { o.single_record = true; }
     else if (a == "--verify") { o.verify_only = true; }
     else if (a == "--dump") { o.dump = strtoull(next().c_str(), nullptr, 10); }
