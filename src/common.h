@@ -29,6 +29,10 @@ namespace jsonbench {
 // harnesses shipped in cuJSON's `related_works/pison/JSON_lines`, which contain
 // copy-paste errors (google.cpp runs the bestbuy query; nspl.cpp runs the
 // google query and misspells "text" as "tex", matching nothing).
+//
+// OpenAlex authors is our own addition (see datasets.sh): the corpus is one
+// daily change partition of the public snapshot, and the query selects the two
+// root-level fields that identify an author record.
 enum class query_id {
   twitter,    // $.user.lang, $.lang
   bestbuy,    // $.categoryPath[1:3].id
@@ -36,6 +40,7 @@ enum class query_id {
   nspl,       // $[8], $[9]   (see note above)
   walmart,    // $.bestMarketplacePrice.price, $.name
   wiki,       // $.claims.P150[*].mainsnak.property
+  openalex,   // $.display_name, $.works_count  (see note below)
 };
 
 const char *query_name(query_id q);

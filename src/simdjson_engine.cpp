@@ -178,6 +178,20 @@ template <typename Doc> error_code q_wiki(Doc doc, extraction &out, workload w) 
   return SUCCESS;
 }
 
+// $.display_name, $.works_count
+template <typename Doc> error_code q_openalex(Doc doc, extraction &out, workload w) {
+  ondemand::object root;
+  if (auto e = doc.get_object().get(root)) { return e; }
+  for (auto field : root) {
+    std::string_view key;
+    if (auto e = field.unescaped_key().get(key)) { return e; }
+    if (key == "display_name" || key == "works_count") {
+      take(field.value(), out, w);
+    }
+  }
+  return SUCCESS;
+}
+
 template <typename Doc>
 error_code dispatch(Doc doc, extraction &out, query_id q, workload w) {
   if (w == workload::structure) {
@@ -194,6 +208,7 @@ error_code dispatch(Doc doc, extraction &out, query_id q, workload w) {
   case query_id::nspl: return q_nspl(doc, out, w);
   case query_id::walmart: return q_walmart(doc, out, w);
   case query_id::wiki: return q_wiki(doc, out, w);
+  case query_id::openalex: return q_openalex(doc, out, w);
   }
   return SUCCESS;
 }
@@ -203,21 +218,28 @@ error_code dispatch(Doc doc, extraction &out, query_id q, workload w) {
 extraction run_serial(const char *data, size_t size, query_id q, workload w,
                       bool threaded, size_t batch_bytes,
                       std::vector<std::string> *trace, size_t trace_limit) {
+  // The corpus is one document per line, the same structure Pison is handed as
+  // its record table, so we tell simdjson too. The format study calls
+  // run_serial_format directly and is unaffected by this.
+  return run_serial_format(data, size, q, w, threaded, batch_bytes,
+#if JSONBENCH_HAVE_NEWLINE_DELIMITED
+                           stream_format::newline_delimited,
+#else
+                           stream_format::whitespace_delimited,
+#endif
+                           trace, trace_limit);
+}
+
+extraction run_serial_format(const char *data, size_t size, query_id q,
+                             workload w, bool threaded, size_t batch_bytes,
+                             stream_format format,
+                             std::vector<std::string> *trace,
+                             size_t trace_limit) {
   ondemand::parser parser;
   parser.threaded = threaded;
   extraction total;
   ondemand::document_stream stream;
-  // The corpus is one document per line, the same structure Pison is handed as
-  // its record table, so we tell simdjson too.
-  if (!parser
-           .iterate_many(data, size, batch_bytes,
-#if JSONBENCH_HAVE_NEWLINE_DELIMITED
-                         stream_format::newline_delimited
-#else
-                         stream_format::whitespace_delimited
-#endif
-                         )
-           .get(stream)) {
+  if (!parser.iterate_many(data, size, batch_bytes, format).get(stream)) {
     for (auto it = stream.begin(); it != stream.end(); ++it) {
       auto doc = *it;
       extraction one;

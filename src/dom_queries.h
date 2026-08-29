@@ -129,6 +129,13 @@ template <class T> void q_wiki(typename T::node doc, extraction &out) {
   });
 }
 
+// $.display_name, $.works_count
+template <class T> void q_openalex(typename T::node doc, extraction &out) {
+  typename T::node v;
+  if (T::obj_get(doc, "display_name", v)) { T::feed(v, out); }
+  if (T::obj_get(doc, "works_count", v)) { T::feed(v, out); }
+}
+
 template <class T>
 void run_query(query_id q, typename T::node doc, extraction &out) {
   switch (q) {
@@ -138,6 +145,7 @@ void run_query(query_id q, typename T::node doc, extraction &out) {
   case query_id::nspl:       q_nspl<T>(doc, out);    return;
   case query_id::walmart:    q_walmart<T>(doc, out); return;
   case query_id::wiki:       q_wiki<T>(doc, out);    return;
+  case query_id::openalex:   q_openalex<T>(doc, out); return;
   }
 }
 
