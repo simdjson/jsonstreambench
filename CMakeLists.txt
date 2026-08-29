@@ -29,13 +29,19 @@ list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_LIST_DIR}/cmake)
 include(get_cpm)
 
 # --- simdjson --------------------------------------------------------------
-# The parallel stream driver is ours (src/parallel_stream.h), so a released
-# simdjson suffices. Pinned by SHA to keep the paper reproducible.
+# The parallel stream driver is ours (src/parallel_stream.h), so this is a plain
+# master commit rather than a patched branch. It is not a release: simdjson cuts
+# releases from a 4.6.x branch, and neither stream_format::newline_delimited nor
+# simdjson::slice_at (both merged to master in #2803) has shipped in one yet. A
+# release still builds -- the probe below detects their absence and the driver
+# falls back to its own slicing -- but it measures a different thing, so the
+# reported numbers come from master. Pinned by SHA to keep the paper
+# reproducible.
 
 CPMAddPackage(
   NAME simdjson
   GITHUB_REPOSITORY simdjson/simdjson
-  GIT_TAG 9b89b82d  # PR #2803, as merged to master
+  GIT_TAG 3839ac681a4a6b4fd09b4d7e03229b35bcd909d7  # master, 2026-08-26
   OPTIONS "SIMDJSON_DEVELOPER_MODE OFF" "BUILD_SHARED_LIBS OFF")
 
 # --- lemire/counters: hardware performance counters (header only) ----------
