@@ -12,6 +12,7 @@
 #define JSONBENCH_DOM_PARALLEL_H
 
 #include "common.h"
+#include "dom_engine.h"
 #include "dom_queries.h"
 
 #include <atomic>
@@ -41,6 +42,8 @@ extraction run_sliced(const char *data, size_t length, size_t threads,
   if (threads == 0) { threads = 1; }
   if (slice_bytes == 0) { slice_bytes = 256 * 1024; }
   std::atomic<size_t> cursor{0};
+  const bool stat = static_partition_flag();
+  const size_t slices = (length + slice_bytes - 1) / slice_bytes;
   std::vector<extraction> shards(threads);
   std::vector<std::thread> workers;
   workers.reserve(threads);
@@ -48,9 +51,16 @@ extraction run_sliced(const char *data, size_t length, size_t threads,
     workers.emplace_back([&, i] {
       auto parse_slice = make_worker();
       extraction &mine = shards[i];
+      size_t next = slices * i / threads;
+      const size_t last = slices * (i + 1) / threads;
       for (;;) {
-        const size_t raw = cursor.fetch_add(slice_bytes,
-                                            std::memory_order_relaxed);
+        size_t raw;
+        if (stat) {
+          if (next >= last) { break; }
+          raw = next++ * slice_bytes;
+        } else {
+          raw = cursor.fetch_add(slice_bytes, std::memory_order_relaxed);
+        }
         if (raw >= length) { break; }
         const size_t begin = (raw == 0) ? 0 : snap_to_newline(data, length, raw);
         const size_t end = snap_to_newline(data, length, raw + slice_bytes);

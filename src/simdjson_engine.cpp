@@ -1,5 +1,6 @@
 #include "simdjson_engine.h"
 
+#include "parallel_stream.h"
 #include "simdjson.h"
 
 #include <string>
@@ -217,9 +218,16 @@ error_code dispatch(Doc doc, extraction &out, query_id q, workload w) {
 extraction run_serial(const char *data, size_t size, query_id q, workload w,
                       bool threaded, size_t batch_bytes,
                       std::vector<std::string> *trace, size_t trace_limit) {
+  // The corpus is one document per line, the same structure Pison is handed as
+  // its record table, so we tell simdjson too. The format study calls
+  // run_serial_format directly and is unaffected by this.
   return run_serial_format(data, size, q, w, threaded, batch_bytes,
-                           stream_format::whitespace_delimited, trace,
-                           trace_limit);
+#if JSONBENCH_HAVE_NEWLINE_DELIMITED
+                           stream_format::newline_delimited,
+#else
+                           stream_format::whitespace_delimited,
+#endif
+                           trace, trace_limit);
 }
 
 extraction run_serial_format(const char *data, size_t size, query_id q,
@@ -244,18 +252,28 @@ extraction run_serial_format(const char *data, size_t size, query_id q,
 }
 
 extraction run_parallel(const char *data, size_t size, query_id q, workload w,
-                        size_t threads, size_t slice_bytes) {
-  experimental::parallel_stream_options options;
+                        size_t threads, size_t slice_bytes,
+                        bool static_partition) {
+  parallel::options options;
   options.threads = threads;
   options.slice_bytes = slice_bytes;
+  options.static_partition = static_partition;
+#if JSONBENCH_HAVE_NEWLINE_DELIMITED
+  // Our corpus is strictly one document per line, which lets simdjson skip the
+  // tail of a partially read document instead of walking it.
+  options.format = stream_format::newline_delimited;
+#else
   options.format = stream_format::whitespace_delimited;
+#endif
   padded_string_view json(data, size, size + SIMDJSON_PADDING);
-  auto result = experimental::parse_many_parallel<extraction>(
+  auto result = parallel::parse_many<extraction>(
       json,
       [q, w](auto doc, extraction &out) { return dispatch(doc, out, q, w); },
       options);
   extraction total;
-  result.for_each([&](const extraction &e) { total.merge(e); });
+  for (const auto &shard : result.shards()) {
+    for (const extraction &e : shard) { total.merge(e); }
+  }
   return total;
 }
 

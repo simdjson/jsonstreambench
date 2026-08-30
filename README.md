@@ -1,9 +1,8 @@
 # jsonstreambench
 
 A fair benchmark for parsing **streams of JSON documents**, comparing
-[simdjson](https://github.com/simdjson/simdjson) — including the experimental
-parallel stream parser of
-[PR #2788](https://github.com/simdjson/simdjson/pull/2788) — against
+[simdjson](https://github.com/simdjson/simdjson) — driven across many threads by
+the slicing rule in `src/parallel_stream.h` — against
 [Pison](https://github.com/AutomataLab/Pison), on Pison's own corpus and
 queries.
 
@@ -27,18 +26,31 @@ jsonbench --dataset <file.ndjson> [options]
                        (default: inferred from the filename)
   --threads a,b,c      thread counts to sweep (default: 1..hw, doubling)
   --reps <n>           repetitions per configuration, best wins (default 3)
-  --slice-kb <n>       parse_many_parallel slice size (default 1024)
+  --slice-kb <n>       parallel slice size (default 64)
+  --assign <mode>      slice assignment: static (default) or dynamic
+  --batch-mb <n>       iterate_many batch size (default 16)
   --sections <list>    load,verify,single,scaling,e2e,format (default: all
                        but format)
   --single-record      treat the input as one bulky JSON document
   --verify             check that the engines agree, then exit
   --dump <n>           print the first n extracted values from each engine
+  --engine-only <name> run only this engine in the scaling section
+  --impl <name>        force a simdjson kernel (haswell, icelake, ...)
+  --levels <n>         override Pison's level_num
 ```
 
 The `format` section compares comma-delimited against newline-delimited
 encoding of the same records, serially and on simdjson's two-thread pipeline.
 
-Output is one `RESULT key=value ...` line per measured configuration.
+Output is one `RESULT key=value ...` line per measured configuration. Each
+carries `spread_pct`, the gap between the slowest and fastest repetition
+relative to the fastest: only the best repetition is reported, and how
+repeatable it was varies enormously between machines.
+
+`--engine-only` narrows the scaling section to one engine, which is what makes
+an aggregate profile interpretable — `perf stat -a` cannot attribute a counter
+to an engine when several run in the same process. Pair it with
+`--sections scaling` so nothing else runs either.
 
 
 ## How the comparison is kept fair
@@ -83,6 +95,48 @@ Hardware counters are collected for single-threaded configurations only.
 engines spawn workers internally, so a multi-threaded reading would be wrong
 rather than noisy. Parallel runs report wall-clock throughput plus CPU seconds
 per gigabyte from `getrusage`, which does aggregate all threads.
+
+## The parallel driver
+
+`src/parallel_stream.h` is this repository's own driver, not a simdjson API. An
+earlier version lived in simdjson as an experimental header
+([PR #2788](https://github.com/simdjson/simdjson/pull/2788)); it belongs in user
+code instead, because nothing in it needs to be inside the library — it is a
+slicing rule plus a thread pool over the public `iterate_many` interface — and
+keeping it out means a caller can adapt the decomposition to their own pipeline
+rather than accept ours. simdjson is therefore pinned to an ordinary master
+commit rather than a patched branch. `src/dom_parallel.h` applies the same rule
+to yyjson, RapidJSON, Boost.JSON and nlohmann: the slicing does not know what
+parses a document, and running the conventional parsers under it is how that
+claim is checked rather than asserted.
+
+The rule: cut the input into fixed-size slices, snap both ends forward to the
+next delimiter so slices abut and no document is split, and give each worker its
+own parser and its own output vector. Nothing is shared on the hot path, and
+values keep their order within a worker but not across the input. This needs a
+delimiter that cannot occur inside a JSON value — a line feed for NDJSON, a
+record separator (0x1E) for RFC 7464 — so comma-delimited input cannot be sliced
+this way at all, its top-level commas being findable only by a serial structural
+scan. Our corpus is strictly one document per line, so simdjson is told that too
+with `stream_format::newline_delimited`, which lets it skip the tail of a
+partially read document rather than walk it. That format and
+`simdjson::slice_at` are detected at configure time rather than required: every
+simdjson *release* lacks both, since releases are cut from a `4.6.x` branch, and
+against one the driver falls back to slicing with `memchr`.
+
+Two knobs control it, and the right values depend on the corpus rather than on
+the machine. `--assign` (default `static`) gives each worker one contiguous run
+of slices; `dynamic` instead has workers claim the next free slice from a shared
+counter, which scatters their regions across the input and, once slices are
+small enough for the counter to be contended, costs a large fraction of the
+throughput. `--slice-kb` (default 64) sets the slice. Both changed when this
+driver landed — they were 1024 KB and `dynamic` — so numbers collected before
+that are not comparable to numbers collected after it. Both were also tuned on
+the six Pison datasets, whose documents are small, and **they do not transfer to
+a corpus of bulky records**: a document larger than a slice is rescanned once
+per overlapping slice, which costs throughput in proportion to the square of the
+document over the slice. Results stay correct at every size; only throughput
+suffers. Raise `--slice-kb` above the longest document for such a corpus.
 
 ## Corpus
 

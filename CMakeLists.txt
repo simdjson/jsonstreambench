@@ -28,14 +28,20 @@ find_package(Threads REQUIRED)
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_LIST_DIR}/cmake)
 include(get_cpm)
 
-# --- simdjson: the PR #2788 branch, pinned by commit -----------------------
-# parse_many_parallel lives in include/simdjson/ondemand_parallel.h on this
-# branch. Pinning by SHA keeps the paper's numbers reproducible even if the
-# branch is rebased or merged.
+# --- simdjson --------------------------------------------------------------
+# The parallel stream driver is ours (src/parallel_stream.h), so this is a plain
+# master commit rather than a patched branch. It is not a release: simdjson cuts
+# releases from a 4.6.x branch, and neither stream_format::newline_delimited nor
+# simdjson::slice_at (both merged to master in #2803) has shipped in one yet. A
+# release still builds -- the probe below detects their absence and the driver
+# falls back to its own slicing -- but it measures a different thing, so the
+# reported numbers come from master. Pinned by SHA to keep the paper
+# reproducible.
+
 CPMAddPackage(
   NAME simdjson
   GITHUB_REPOSITORY simdjson/simdjson
-  GIT_TAG 88186d59  # PR #2788
+  GIT_TAG 3839ac681a4a6b4fd09b4d7e03229b35bcd909d7  # master, 2026-08-26
   OPTIONS "SIMDJSON_DEVELOPER_MODE OFF" "BUILD_SHARED_LIBS OFF")
 
 # --- lemire/counters: hardware performance counters (header only) ----------
@@ -68,6 +74,29 @@ target_compile_options(pison PRIVATE
 target_compile_options(pison PUBLIC -include cstdint)
 target_compile_features(pison PUBLIC cxx_std_11)
 set_target_properties(pison PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+# The parallel stream driver lives in this repository (src/parallel_stream.h),
+# not in simdjson. It goes faster when simdjson can skip the tail of a partially
+# read document, which needs stream_format::newline_delimited; detect it rather
+# than require it, so the benchmark still builds against released simdjson.
+set(NEWLINE_DELIMITED_POS -1)
+set(SLICE_AT_POS -1)
+if(EXISTS ${simdjson_SOURCE_DIR}/include/simdjson/base.h)
+  file(READ ${simdjson_SOURCE_DIR}/include/simdjson/base.h SIMDJSON_BASE_H)
+  string(FIND "${SIMDJSON_BASE_H}" "newline_delimited" NEWLINE_DELIMITED_POS)
+endif()
+if(EXISTS ${simdjson_SOURCE_DIR}/include/simdjson/padded_string_view.h)
+  file(READ ${simdjson_SOURCE_DIR}/include/simdjson/padded_string_view.h SIMDJSON_PSV_H)
+  string(FIND "${SIMDJSON_PSV_H}" "slice_at" SLICE_AT_POS)
+endif()
+if(NEWLINE_DELIMITED_POS GREATER -1 AND SLICE_AT_POS GREATER -1)
+  set(NEWLINE_DELIMITED 1)
+  message(STATUS "simdjson has stream_format::newline_delimited")
+else()
+  set(NEWLINE_DELIMITED 0)
+  message(STATUS "simdjson lacks newline_delimited/slice_at; the parallel "
+                 "engine falls back to its own slicing")
+endif()
 
 # --- conventional DOM parsers ----------------------------------------------
 # Baselines: what a practitioner uses today. Each is optional; a library that
@@ -158,6 +187,7 @@ add_executable(jsonbench
   ${DOM_SOURCES})
 target_include_directories(jsonbench PRIVATE src)
 target_compile_definitions(jsonbench PRIVATE
+  JSONBENCH_HAVE_NEWLINE_DELIMITED=${NEWLINE_DELIMITED}
   JSONBENCH_HAVE_YYJSON=${HAVE_YYJSON}
   JSONBENCH_HAVE_RAPIDJSON=${HAVE_RAPIDJSON}
   JSONBENCH_HAVE_BOOST_JSON=${HAVE_BOOST_JSON}

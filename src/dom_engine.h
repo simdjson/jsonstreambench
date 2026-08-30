@@ -47,6 +47,13 @@ extraction run_serial(library lib, const char *data, size_t size, query_id q,
 extraction run_parallel(library lib, const char *data, size_t size, query_id q,
                         size_t threads, size_t slice_bytes, size_t longest);
 
+// Mirrors parallel::options::static_partition for the DOM drivers, which share
+// run_sliced rather than a per-call options struct. Set before a run.
+inline bool &static_partition_flag() {
+  static bool value = true;
+  return value;
+}
+
 } // namespace dom
 } // namespace jsonbench
 
