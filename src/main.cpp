@@ -27,6 +27,7 @@
 
 #include "simdjson.h"
 
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -46,7 +47,7 @@ struct options {
   std::string query_name;
   std::vector<size_t> threads;
   int reps = 3;
-  size_t slice_kb = 64;     // parallel::parse_many slice size
+  size_t slice_kb = 0;      // parallel slice size; 0 = derived from the corpus
   size_t batch_mb = 16;     // iterate_many batch for the built-in 2-thread mode
   bool static_partition = true;   // --assign dynamic to override
   bool single_record = false;
@@ -83,7 +84,7 @@ void usage() {
       "                       (default: inferred from the filename)\n"
       "  --threads a,b,c      thread counts to sweep (default: 1..hw, doubling)\n"
       "  --reps <n>           repetitions per configuration, best wins (default 3)\n"
-      "  --slice-kb <n>       parallel slice size (default 64)\n"
+      "  --slice-kb <n>       parallel slice size (default: derived from the corpus)\n"
       "  --assign <mode>      slice assignment: static (default) or dynamic\n"
       "  --batch-mb <n>       iterate_many batch size (default 16)\n"
       "  --single-record      treat the input as one bulky JSON document\n"
@@ -182,6 +183,14 @@ void emit(const char *engine, const char *phase, const char *workload_name,
   std::fflush(stdout);
 }
 
+size_t derive_slice_kib(const dom::corpus_stats &stats, size_t total_bytes) {
+  constexpr std::array<size_t, 5> candidates_kib = {64, 128, 256, 512, 1024};
+  for (size_t i = 0; i < candidates_kib.size(); i++) {
+    if (stats.bytes_above[i] * 100 <= total_bytes) { return candidates_kib[i]; }
+  }
+  return candidates_kib.back();
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -230,6 +239,10 @@ int main(int argc, char **argv) {
   raw.append(64 + 64, '\0');
   const char *data = raw.data();
 
+  const dom::corpus_stats stats = dom::scan_corpus(data, bytes);
+  const size_t slice_kb =
+      o.slice_kb ? o.slice_kb : derive_slice_kib(stats, bytes);
+
   unsigned hw = std::thread::hardware_concurrency();
   if (hw == 0) { hw = 1; }
   if (o.threads.empty()) {
@@ -238,8 +251,8 @@ int main(int argc, char **argv) {
   }
 
   std::printf("# jsonbench dataset=%s query=%s levels=%d bytes=%zu "
-              "simdjson_impl=%s hardware_threads=%u counters=%s\n",
-              label.c_str(), query_name(q), levels, bytes,
+              "slice_kb=%zu simdjson_impl=%s hardware_threads=%u counters=%s\n",
+              label.c_str(), query_name(q), levels, bytes, slice_kb,
               sj::implementation_name(), hw,
               counters::has_performance_counters() ? "yes" : "no");
 
@@ -349,13 +362,13 @@ int main(int argc, char **argv) {
       dom::library::boost_json, dom::library::nlohmann};
   // Sizes each DOM worker's arena. One pass over the input, taken once here so
   // that no timed region pays for it.
-  const size_t dom_longest = dom::longest_document(data, bytes);
+  const size_t dom_longest = stats.longest;
   // iterate_many's batch must exceed the longest document, or the serial
   // baseline fails with CAPACITY. Keep the 1 MiB batch the established corpora
   // were measured with; grow it only when a corpus demands it (the OpenAlex
   // corpus has records of up to 1.37 MB).
   const size_t serial_batch =
-      dom_longest > (1u << 20) ? dom_longest + (1u << 20) : (1u << 20);
+      dom_longest > (1u << 20) ? dom_longest + 1 : (1u << 20);
   bool agree = true;
   extraction pison_ref;
   if (o.wants("verify") || o.dump > 0) {
@@ -561,10 +574,10 @@ int main(int argc, char **argv) {
     if (o.wants_engine("simdjson-parallel"))
     for (const auto &ph : sj_phases) {
       auto s = measure_parallel(o.reps, [&] {
-        sj::run_parallel(data, bytes, q, ph.w, t, o.slice_kb << 10,
+        sj::run_parallel(data, bytes, q, ph.w, t, slice_kb << 10,
                          o.static_partition);
       });
-      extraction e = sj::run_parallel(data, bytes, q, ph.w, t, o.slice_kb << 10,
+      extraction e = sj::run_parallel(data, bytes, q, ph.w, t, slice_kb << 10,
                                       o.static_partition);
       emit("simdjson-parallel", ph.phase, sj::workload_name(ph.w), t, o, label,
            bytes, docs, s, e);
@@ -578,10 +591,10 @@ int main(int argc, char **argv) {
       if (!dom::available(lib)) { continue; }
       if (!o.wants_engine(dom::engine_name(lib, true))) { continue; }
       auto ds = measure_parallel(o.reps, [&] {
-        dom::run_parallel(lib, data, bytes, q, t, o.slice_kb << 10, dom_longest);
+        dom::run_parallel(lib, data, bytes, q, t, slice_kb << 10, dom_longest);
       });
       extraction de = dom::run_parallel(lib, data, bytes, q, t,
-                                        o.slice_kb << 10, dom_longest);
+                                        slice_kb << 10, dom_longest);
       emit(dom::engine_name(lib, true), "decode", "decode", t, o, label, bytes,
            docs, ds, de);
     }

@@ -86,6 +86,19 @@ size_t longest_document(const char *data, size_t size) {
   return longest_line(data, size);
 }
 
+corpus_stats scan_corpus(const char *data, size_t size) {
+  constexpr size_t thresholds[5] = {64u << 10, 128u << 10, 256u << 10,
+                                    512u << 10, 1024u << 10};
+  corpus_stats stats;
+  for_each_line(data, size, [&](const char *, size_t n) {
+    if (n > stats.longest) { stats.longest = n; }
+    for (int i = 0; i < 5; i++) {
+      if (n > thresholds[i]) { stats.bytes_above[i] += n; }
+    }
+  });
+  return stats;
+}
+
 extraction run_serial(library lib, const char *data, size_t size, query_id q,
                       size_t longest) {
   switch (lib) {
