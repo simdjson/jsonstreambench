@@ -389,14 +389,16 @@ int main(int argc, char **argv) {
         pison::run_stream(ptext, tbl, q, pison::workload::decode, levels, 1);
     extraction sj_dec =
         sj::run_serial(data, bytes, q, sj::workload::decode, false, serial_batch);
+    bool pison_decode_agrees = pison_dec.matches == sj_dec.matches &&
+                               pison_dec.sum == sj_dec.sum;
+    if (!pison_decode_agrees) { agree = false; }
     std::printf("# agreement decode: pison matches=%llu hash=%llu | "
                 "simdjson matches=%llu hash=%llu | %s\n",
                 (unsigned long long)pison_dec.matches,
                 (unsigned long long)pison_dec.sum,
                 (unsigned long long)sj_dec.matches,
                 (unsigned long long)sj_dec.sum,
-                (pison_dec.matches == sj_dec.matches &&
-                 pison_dec.sum == sj_dec.sum)
+                pison_decode_agrees
                     ? "AGREE"
                     : (pison_dec.matches == sj_dec.matches ? "COUNT-ONLY"
                                                            : "DISAGREE"));
@@ -441,6 +443,7 @@ int main(int argc, char **argv) {
     return 0;
   }
   if (o.verify_only) { return agree ? 0 : 2; }
+  if (o.wants("verify") && !agree) { return 2; }
 
   // -----------------------------------------------------------------------
   // Single-threaded: this is where the instruction-count analysis lives.
@@ -499,24 +502,38 @@ int main(int argc, char **argv) {
   }
 
   // -----------------------------------------------------------------------
-  // Stream-format overhead (opt-in: sections list contains "format"): the
-  // same documents as comma-delimited input, against newline-delimited, on
-  // the serial path and on simdjson's built-in two-thread pipeline. The comma
-  // form is rebuilt from the record table, so both runs see identical bytes
-  // modulo the separators.
+  // Stream-format overhead (opt-in: sections list contains "format").
   // -----------------------------------------------------------------------
   if (o.wants("format")) {
     std::string comma;
-    comma.reserve(bytes);
-    for (size_t i = 0; i < tbl.count(); i++) {
-      size_t len = tbl.length[i];
-      while (len > 0 && (ptext[tbl.offset[i] + len - 1] == '\n' ||
-                         ptext[tbl.offset[i] + len - 1] == '\r')) {
+    comma.reserve(bytes + tbl.count());
+    size_t pos = 0;
+    size_t comma_docs = 0;
+    while (pos < bytes) {
+      const char *nl =
+          static_cast<const char *>(memchr(data + pos, '\n', bytes - pos));
+      const size_t end = nl ? size_t(nl - data) + 1 : bytes;
+      size_t len = end - pos;
+      while (len > 0 && (data[pos + len - 1] == '\n' ||
+                         data[pos + len - 1] == '\r')) {
         len--;
       }
-      comma.append(ptext + tbl.offset[i], len);
-      comma.push_back(',');
+      if (len != 0 && len <= 5) {
+        std::fprintf(stderr, "format study cannot compare records of 5 bytes or less\n");
+        return 2;
+      }
+      if (len != 0) {
+        if (comma_docs++ != 0) { comma.push_back(','); }
+        comma.append(data + pos, len);
+      }
+      pos = end;
     }
+    if (comma_docs != tbl.count()) {
+      std::fprintf(stderr, "format input has %zu records; expected %zu\n",
+                   comma_docs, tbl.count());
+      return 2;
+    }
+    const size_t comma_bytes = comma.size();
     comma.append(64, '\0');
     struct encoding {
       const char *name;
@@ -525,9 +542,11 @@ int main(int argc, char **argv) {
       simdjson::stream_format format;
     };
     const encoding encodings[] = {
+        {"newline", data, bytes,
+         simdjson::stream_format::newline_delimited},
         {"whitespace", data, bytes,
          simdjson::stream_format::whitespace_delimited},
-        {"comma", comma.data(), comma.size(),
+        {"comma", comma.data(), comma_bytes,
          simdjson::stream_format::comma_delimited},
     };
     // Measure one encoding at one thread count. The threaded run skips the
@@ -546,14 +565,29 @@ int main(int argc, char **argv) {
                               threaded, serial_batch, enc.format);
       });
     };
+    extraction canonical;
     for (bool threaded : {false, true}) {
       for (const encoding &enc : encodings) {
         measurement s = measure_encoding(enc, threaded);
         extraction e = sj::run_serial_format(
             enc.data, enc.size, q, sj::workload::query, threaded, serial_batch,
             enc.format);
+        if (!threaded &&
+            enc.format == simdjson::stream_format::newline_delimited) {
+          canonical = e;
+        } else if (e.matches != canonical.matches || e.sum != canonical.sum) {
+          std::fprintf(stderr,
+                       "format disagreement (%s, %s): matches=%llu hash=%llu; "
+                       "newline matches=%llu hash=%llu\n",
+                       enc.name, threaded ? "2 threads" : "serial",
+                       (unsigned long long)e.matches,
+                       (unsigned long long)e.sum,
+                       (unsigned long long)canonical.matches,
+                       (unsigned long long)canonical.sum);
+          return 2;
+        }
         emit("simdjson-format", "format", enc.name, threaded ? 2 : 1, o, label,
-             bytes, docs, s, e);
+             enc.size, docs, s, e);
       }
     }
   }
