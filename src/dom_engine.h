@@ -34,10 +34,6 @@ const char *library_version(library lib);
 // main.cpp skips it silently.
 bool available(library lib);
 
-// `longest` sizes each worker's arena. The caller computes it once outside
-// timed regions because finding it requires a full pass over the input.
-size_t longest_document(const char *data, size_t size);
-
 struct corpus_stats {
   size_t longest = 0;
   size_t bytes_above[5] = {}; // thresholds: 64/128/256/512/1024 KiB

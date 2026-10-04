@@ -82,10 +82,6 @@ const char *library_version(library lib) {
   }
 }
 
-size_t longest_document(const char *data, size_t size) {
-  return longest_line(data, size);
-}
-
 corpus_stats scan_corpus(const char *data, size_t size) {
   constexpr size_t thresholds[5] = {64u << 10, 128u << 10, 256u << 10,
                                     512u << 10, 1024u << 10};
