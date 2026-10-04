@@ -27,6 +27,7 @@
 
 #include "simdjson.h"
 
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -46,11 +47,12 @@ struct options {
   std::string query_name;
   std::vector<size_t> threads;
   int reps = 3;
-  size_t slice_kb = 64;     // parallel::parse_many slice size
+  size_t slice_kb = 0;      // parallel slice size; 0 = derived from the corpus
   size_t batch_mb = 16;     // iterate_many batch for the built-in 2-thread mode
   bool static_partition = true;   // --assign dynamic to override
   bool single_record = false;
   bool verify_only = false;
+  bool no_dom = false;
   size_t dump = 0;
   int levels = 0; // 0 = derive from the query
   // Which output sections to produce. Defaults to all of them; the sweep
@@ -83,10 +85,11 @@ void usage() {
       "                       (default: inferred from the filename)\n"
       "  --threads a,b,c      thread counts to sweep (default: 1..hw, doubling)\n"
       "  --reps <n>           repetitions per configuration, best wins (default 3)\n"
-      "  --slice-kb <n>       parallel slice size (default 64)\n"
+      "  --slice-kb <n>       parallel slice size (default: derived from the corpus)\n"
       "  --assign <mode>      slice assignment: static (default) or dynamic\n"
       "  --batch-mb <n>       iterate_many batch size (default 16)\n"
       "  --single-record      treat the input as one bulky JSON document\n"
+      "  --no-dom             skip conventional DOM parser benchmarks\n"
       "  --verify             check that the engines agree, then exit\n"
       "  --dump <n>           print the first n extracted values from each\n"
       "                       engine side by side, then exit\n"
@@ -120,6 +123,7 @@ bool parse_args(int argc, char **argv, options &o) {
       o.static_partition = (mode == "static");
     }
     else if (a == "--single-record") { o.single_record = true; }
+    else if (a == "--no-dom") { o.no_dom = true; }
     else if (a == "--verify") { o.verify_only = true; }
     else if (a == "--dump") { o.dump = strtoull(next().c_str(), nullptr, 10); }
     else if (a == "--sections") { o.sections = next(); }
@@ -182,6 +186,14 @@ void emit(const char *engine, const char *phase, const char *workload_name,
   std::fflush(stdout);
 }
 
+size_t derive_slice_kib(const dom::corpus_stats &stats, size_t total_bytes) {
+  constexpr std::array<size_t, 5> candidates_kib = {64, 128, 256, 512, 1024};
+  for (size_t i = 0; i < candidates_kib.size(); i++) {
+    if (stats.bytes_above[i] * 100 <= total_bytes) { return candidates_kib[i]; }
+  }
+  return candidates_kib.back();
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -230,6 +242,10 @@ int main(int argc, char **argv) {
   raw.append(64 + 64, '\0');
   const char *data = raw.data();
 
+  const dom::corpus_stats stats = dom::scan_corpus(data, bytes);
+  const size_t slice_kb =
+      o.slice_kb ? o.slice_kb : derive_slice_kib(stats, bytes);
+
   unsigned hw = std::thread::hardware_concurrency();
   if (hw == 0) { hw = 1; }
   if (o.threads.empty()) {
@@ -238,8 +254,8 @@ int main(int argc, char **argv) {
   }
 
   std::printf("# jsonbench dataset=%s query=%s levels=%d bytes=%zu "
-              "simdjson_impl=%s hardware_threads=%u counters=%s\n",
-              label.c_str(), query_name(q), levels, bytes,
+              "slice_kb=%zu simdjson_impl=%s hardware_threads=%u counters=%s\n",
+              label.c_str(), query_name(q), levels, bytes, slice_kb,
               sj::implementation_name(), hw,
               counters::has_performance_counters() ? "yes" : "no");
 
@@ -349,13 +365,13 @@ int main(int argc, char **argv) {
       dom::library::boost_json, dom::library::nlohmann};
   // Sizes each DOM worker's arena. One pass over the input, taken once here so
   // that no timed region pays for it.
-  const size_t dom_longest = dom::longest_document(data, bytes);
+  const size_t dom_longest = stats.longest;
   // iterate_many's batch must exceed the longest document, or the serial
   // baseline fails with CAPACITY. Keep the 1 MiB batch the established corpora
   // were measured with; grow it only when a corpus demands it (the OpenAlex
   // corpus has records of up to 1.37 MB).
   const size_t serial_batch =
-      dom_longest > (1u << 20) ? dom_longest + (1u << 20) : (1u << 20);
+      dom_longest > (1u << 20) ? dom_longest + 1 : (1u << 20);
   bool agree = true;
   extraction pison_ref;
   if (o.wants("verify") || o.dump > 0) {
@@ -376,14 +392,16 @@ int main(int argc, char **argv) {
         pison::run_stream(ptext, tbl, q, pison::workload::decode, levels, 1);
     extraction sj_dec =
         sj::run_serial(data, bytes, q, sj::workload::decode, false, serial_batch);
+    bool pison_decode_agrees = pison_dec.matches == sj_dec.matches &&
+                               pison_dec.sum == sj_dec.sum;
+    if (!pison_decode_agrees) { agree = false; }
     std::printf("# agreement decode: pison matches=%llu hash=%llu | "
                 "simdjson matches=%llu hash=%llu | %s\n",
                 (unsigned long long)pison_dec.matches,
                 (unsigned long long)pison_dec.sum,
                 (unsigned long long)sj_dec.matches,
                 (unsigned long long)sj_dec.sum,
-                (pison_dec.matches == sj_dec.matches &&
-                 pison_dec.sum == sj_dec.sum)
+                pison_decode_agrees
                     ? "AGREE"
                     : (pison_dec.matches == sj_dec.matches ? "COUNT-ONLY"
                                                            : "DISAGREE"));
@@ -391,7 +409,7 @@ int main(int argc, char **argv) {
     // serially and under the slicing rule. The parallel check also proves the
     // slices abut: a dropped or duplicated document changes the match count.
     for (auto lib : kDomLibraries) {
-      if (!dom::available(lib)) { continue; }
+      if (o.no_dom || !dom::available(lib)) { continue; }
       extraction ser = dom::run_serial(lib, data, bytes, q, dom_longest);
       extraction par =
           dom::run_parallel(lib, data, bytes, q, 8, 256u << 10, dom_longest);
@@ -428,6 +446,7 @@ int main(int argc, char **argv) {
     return 0;
   }
   if (o.verify_only) { return agree ? 0 : 2; }
+  if (o.wants("verify") && !agree) { return 2; }
 
   // -----------------------------------------------------------------------
   // Single-threaded: this is where the instruction-count analysis lives.
@@ -475,7 +494,7 @@ int main(int argc, char **argv) {
     // and converts every number whether the query needs it or not, so these
     // are the analogue of simdjson's `decode` row, not of its `query` row.
     for (auto lib : kDomLibraries) {
-      if (!dom::available(lib)) { continue; }
+      if (o.no_dom || !dom::available(lib)) { continue; }
       auto ds = measure_single(o.reps, [&] {
         dom::run_serial(lib, data, bytes, q, dom_longest);
       });
@@ -486,24 +505,38 @@ int main(int argc, char **argv) {
   }
 
   // -----------------------------------------------------------------------
-  // Stream-format overhead (opt-in: sections list contains "format"): the
-  // same documents as comma-delimited input, against newline-delimited, on
-  // the serial path and on simdjson's built-in two-thread pipeline. The comma
-  // form is rebuilt from the record table, so both runs see identical bytes
-  // modulo the separators.
+  // Stream-format overhead (opt-in: sections list contains "format").
   // -----------------------------------------------------------------------
   if (o.wants("format")) {
     std::string comma;
-    comma.reserve(bytes);
-    for (size_t i = 0; i < tbl.count(); i++) {
-      size_t len = tbl.length[i];
-      while (len > 0 && (ptext[tbl.offset[i] + len - 1] == '\n' ||
-                         ptext[tbl.offset[i] + len - 1] == '\r')) {
+    comma.reserve(bytes + tbl.count());
+    size_t pos = 0;
+    size_t comma_docs = 0;
+    while (pos < bytes) {
+      const char *nl =
+          static_cast<const char *>(memchr(data + pos, '\n', bytes - pos));
+      const size_t end = nl ? size_t(nl - data) + 1 : bytes;
+      size_t len = end - pos;
+      while (len > 0 && (data[pos + len - 1] == '\n' ||
+                         data[pos + len - 1] == '\r')) {
         len--;
       }
-      comma.append(ptext + tbl.offset[i], len);
-      comma.push_back(',');
+      if (len != 0 && len <= 5) {
+        std::fprintf(stderr, "format study cannot compare records of 5 bytes or less\n");
+        return 2;
+      }
+      if (len != 0) {
+        if (comma_docs++ != 0) { comma.push_back(','); }
+        comma.append(data + pos, len);
+      }
+      pos = end;
     }
+    if (comma_docs != tbl.count()) {
+      std::fprintf(stderr, "format input has %zu records; expected %zu\n",
+                   comma_docs, tbl.count());
+      return 2;
+    }
+    const size_t comma_bytes = comma.size();
     comma.append(64, '\0');
     struct encoding {
       const char *name;
@@ -512,9 +545,11 @@ int main(int argc, char **argv) {
       simdjson::stream_format format;
     };
     const encoding encodings[] = {
+        {"newline", data, bytes,
+         simdjson::stream_format::newline_delimited},
         {"whitespace", data, bytes,
          simdjson::stream_format::whitespace_delimited},
-        {"comma", comma.data(), comma.size(),
+        {"comma", comma.data(), comma_bytes,
          simdjson::stream_format::comma_delimited},
     };
     // Measure one encoding at one thread count. The threaded run skips the
@@ -533,14 +568,29 @@ int main(int argc, char **argv) {
                               threaded, serial_batch, enc.format);
       });
     };
+    extraction canonical;
     for (bool threaded : {false, true}) {
       for (const encoding &enc : encodings) {
         measurement s = measure_encoding(enc, threaded);
         extraction e = sj::run_serial_format(
             enc.data, enc.size, q, sj::workload::query, threaded, serial_batch,
             enc.format);
+        if (!threaded &&
+            enc.format == simdjson::stream_format::newline_delimited) {
+          canonical = e;
+        } else if (e.matches != canonical.matches || e.sum != canonical.sum) {
+          std::fprintf(stderr,
+                       "format disagreement (%s, %s): matches=%llu hash=%llu; "
+                       "newline matches=%llu hash=%llu\n",
+                       enc.name, threaded ? "2 threads" : "serial",
+                       (unsigned long long)e.matches,
+                       (unsigned long long)e.sum,
+                       (unsigned long long)canonical.matches,
+                       (unsigned long long)canonical.sum);
+          return 2;
+        }
         emit("simdjson-format", "format", enc.name, threaded ? 2 : 1, o, label,
-             bytes, docs, s, e);
+             enc.size, docs, s, e);
       }
     }
   }
@@ -561,10 +611,10 @@ int main(int argc, char **argv) {
     if (o.wants_engine("simdjson-parallel"))
     for (const auto &ph : sj_phases) {
       auto s = measure_parallel(o.reps, [&] {
-        sj::run_parallel(data, bytes, q, ph.w, t, o.slice_kb << 10,
+        sj::run_parallel(data, bytes, q, ph.w, t, slice_kb << 10,
                          o.static_partition);
       });
-      extraction e = sj::run_parallel(data, bytes, q, ph.w, t, o.slice_kb << 10,
+      extraction e = sj::run_parallel(data, bytes, q, ph.w, t, slice_kb << 10,
                                       o.static_partition);
       emit("simdjson-parallel", ph.phase, sj::workload_name(ph.w), t, o, label,
            bytes, docs, s, e);
@@ -573,15 +623,15 @@ int main(int argc, char **argv) {
     // on-demand one. Nothing in the decomposition knows what parses a document,
     // so this measures how much of our throughput comes from the slicing and
     // how much from on-demand parsing.
-    dom::static_partition_flag() = o.static_partition;
+    if (!o.no_dom) dom::static_partition_flag() = o.static_partition;
     for (auto lib : kDomLibraries) {
-      if (!dom::available(lib)) { continue; }
+      if (o.no_dom || !dom::available(lib)) { continue; }
       if (!o.wants_engine(dom::engine_name(lib, true))) { continue; }
       auto ds = measure_parallel(o.reps, [&] {
-        dom::run_parallel(lib, data, bytes, q, t, o.slice_kb << 10, dom_longest);
+        dom::run_parallel(lib, data, bytes, q, t, slice_kb << 10, dom_longest);
       });
       extraction de = dom::run_parallel(lib, data, bytes, q, t,
-                                        o.slice_kb << 10, dom_longest);
+                                        slice_kb << 10, dom_longest);
       emit(dom::engine_name(lib, true), "decode", "decode", t, o, label, bytes,
            docs, ds, de);
     }

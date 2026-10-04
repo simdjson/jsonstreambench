@@ -34,13 +34,11 @@ const char *library_version(library lib);
 // main.cpp skips it silently.
 bool available(library lib);
 
-// `longest` is the length of the longest document in the buffer, used to size
-// each worker's arena. It is a parameter rather than something these functions
-// work out for themselves because finding it is a full pass over the input:
-// computing it inside the timed region would charge every DOM engine for a
-// scan of the whole buffer, which at high thread counts is comparable to the
-// parse itself. main.cpp computes it once per dataset, outside every clock.
-size_t longest_document(const char *data, size_t size);
+struct corpus_stats {
+  size_t longest = 0;
+  size_t bytes_above[5] = {}; // thresholds: 64/128/256/512/1024 KiB
+};
+corpus_stats scan_corpus(const char *data, size_t size);
 
 extraction run_serial(library lib, const char *data, size_t size, query_id q,
                       size_t longest);

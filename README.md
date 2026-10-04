@@ -26,7 +26,7 @@ jsonbench --dataset <file.ndjson> [options]
                        (default: inferred from the filename)
   --threads a,b,c      thread counts to sweep (default: 1..hw, doubling)
   --reps <n>           repetitions per configuration, best wins (default 3)
-  --slice-kb <n>       parallel slice size (default 64)
+  --slice-kb <n>       parallel slice size (default: derived from the corpus)
   --assign <mode>      slice assignment: static (default) or dynamic
   --batch-mb <n>       iterate_many batch size (default 16)
   --sections <list>    load,verify,single,scaling,e2e,format (default: all
@@ -129,14 +129,19 @@ the machine. `--assign` (default `static`) gives each worker one contiguous run
 of slices; `dynamic` instead has workers claim the next free slice from a shared
 counter, which scatters their regions across the input and, once slices are
 small enough for the counter to be contended, costs a large fraction of the
-throughput. `--slice-kb` (default 64) sets the slice. Both changed when this
-driver landed — they were 1024 KB and `dynamic` — so numbers collected before
-that are not comparable to numbers collected after it. Both were also tuned on
-the six Pison datasets, whose documents are small, and **they do not transfer to
-a corpus of bulky records**: a document larger than a slice is rescanned once
-per overlapping slice, which costs throughput in proportion to the square of the
-document over the slice. Results stay correct at every size; only throughput
-suffers. Raise `--slice-kb` above the longest document for such a corpus.
+throughput. `--slice-kb` (default: derived from the corpus) sets the slice.
+Published measurements used `dynamic` with an explicit 256 KiB slice; the
+original driver defaulted to 1024 KiB and `dynamic`. These settings were tuned
+on the six Pison datasets and do not transfer to bulky records: a record larger
+than a slice is rescanned across overlapping slices, hurting throughput but
+not correctness.
+
+The default slice is therefore derived rather than fixed. The rescan cost is
+set by the byte mass above the slice, not by the longest record, so the
+benchmark picks the smallest candidate slice (64–1024 KiB) where at most 1%
+of the bytes sit in longer records, scanned outside timed regions. Five Pison
+datasets get 64 KiB; Google Maps gets 1024 KiB, and OpenAlex gets 256 KiB. Pass
+`--slice-kb` explicitly to override.
 
 ## Corpus
 
