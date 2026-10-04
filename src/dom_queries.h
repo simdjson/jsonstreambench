@@ -172,16 +172,6 @@ void for_each_line(const char *data, size_t size, F &&f) {
   }
 }
 
-// Longest line in the buffer: DOM parsers need an arena big enough for the
-// biggest document, and sizing it once beats growing it per document.
-inline size_t longest_line(const char *data, size_t size) {
-  size_t best = 0;
-  for_each_line(data, size, [&](const char *, size_t n) {
-    if (n > best) { best = n; }
-  });
-  return best;
-}
-
 } // namespace dom
 } // namespace jsonbench
 
