@@ -104,7 +104,7 @@ earlier version lived in simdjson as an experimental header
 code instead, because nothing in it needs to be inside the library — it is a
 slicing rule plus a thread pool over the public `iterate_many` interface — and
 keeping it out means a caller can adapt the decomposition to their own pipeline
-rather than accept ours. simdjson is therefore pinned to an ordinary master
+rather than accept ours. simdjson is therefore pinned to its 5.0.2 release
 commit rather than a patched branch. `src/dom_parallel.h` applies the same rule
 to yyjson, RapidJSON, Boost.JSON and nlohmann: the slicing does not know what
 parses a document, and running the conventional parsers under it is how that
