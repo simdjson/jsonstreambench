@@ -52,6 +52,7 @@ struct options {
   bool static_partition = true;   // --assign dynamic to override
   bool single_record = false;
   bool verify_only = false;
+  bool no_dom = false;
   size_t dump = 0;
   int levels = 0; // 0 = derive from the query
   // Which output sections to produce. Defaults to all of them; the sweep
@@ -88,6 +89,7 @@ void usage() {
       "  --assign <mode>      slice assignment: static (default) or dynamic\n"
       "  --batch-mb <n>       iterate_many batch size (default 16)\n"
       "  --single-record      treat the input as one bulky JSON document\n"
+      "  --no-dom             skip conventional DOM parser benchmarks\n"
       "  --verify             check that the engines agree, then exit\n"
       "  --dump <n>           print the first n extracted values from each\n"
       "                       engine side by side, then exit\n"
@@ -121,6 +123,7 @@ bool parse_args(int argc, char **argv, options &o) {
       o.static_partition = (mode == "static");
     }
     else if (a == "--single-record") { o.single_record = true; }
+    else if (a == "--no-dom") { o.no_dom = true; }
     else if (a == "--verify") { o.verify_only = true; }
     else if (a == "--dump") { o.dump = strtoull(next().c_str(), nullptr, 10); }
     else if (a == "--sections") { o.sections = next(); }
@@ -406,7 +409,7 @@ int main(int argc, char **argv) {
     // serially and under the slicing rule. The parallel check also proves the
     // slices abut: a dropped or duplicated document changes the match count.
     for (auto lib : kDomLibraries) {
-      if (!dom::available(lib)) { continue; }
+      if (o.no_dom || !dom::available(lib)) { continue; }
       extraction ser = dom::run_serial(lib, data, bytes, q, dom_longest);
       extraction par =
           dom::run_parallel(lib, data, bytes, q, 8, 256u << 10, dom_longest);
@@ -491,7 +494,7 @@ int main(int argc, char **argv) {
     // and converts every number whether the query needs it or not, so these
     // are the analogue of simdjson's `decode` row, not of its `query` row.
     for (auto lib : kDomLibraries) {
-      if (!dom::available(lib)) { continue; }
+      if (o.no_dom || !dom::available(lib)) { continue; }
       auto ds = measure_single(o.reps, [&] {
         dom::run_serial(lib, data, bytes, q, dom_longest);
       });
@@ -620,9 +623,9 @@ int main(int argc, char **argv) {
     // on-demand one. Nothing in the decomposition knows what parses a document,
     // so this measures how much of our throughput comes from the slicing and
     // how much from on-demand parsing.
-    dom::static_partition_flag() = o.static_partition;
+    if (!o.no_dom) dom::static_partition_flag() = o.static_partition;
     for (auto lib : kDomLibraries) {
-      if (!dom::available(lib)) { continue; }
+      if (o.no_dom || !dom::available(lib)) { continue; }
       if (!o.wants_engine(dom::engine_name(lib, true))) { continue; }
       auto ds = measure_parallel(o.reps, [&] {
         dom::run_parallel(lib, data, bytes, q, t, slice_kb << 10, dom_longest);
