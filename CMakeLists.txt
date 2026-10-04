@@ -30,18 +30,16 @@ include(get_cpm)
 
 # --- simdjson --------------------------------------------------------------
 # The parallel stream driver is ours (src/parallel_stream.h), so this is a plain
-# master commit rather than a patched branch. It is not a release: simdjson cuts
-# releases from a 4.6.x branch, and neither stream_format::newline_delimited nor
-# simdjson::slice_at (both merged to master in #2803) has shipped in one yet. A
-# release still builds -- the probe below detects their absence and the driver
-# falls back to its own slicing -- but it measures a different thing, so the
-# reported numbers come from master. Pinned by SHA to keep the paper
-# reproducible.
+# simdjson commit rather than a patched branch: the 5.0.2 release commit, which
+# ships stream_format::newline_delimited and simdjson::slice_at (#2803). An
+# older release still builds -- the probe below detects their absence and the
+# driver falls back to its own slicing -- but it measures a different thing.
+# Pinned by SHA to keep the paper reproducible.
 
 CPMAddPackage(
   NAME simdjson
   GITHUB_REPOSITORY simdjson/simdjson
-  GIT_TAG 3839ac681a4a6b4fd09b4d7e03229b35bcd909d7  # master, 2026-08-26
+  GIT_TAG 0baf9be1fabd1fe57079402bf20464c0a49aa8e3  # 5.0.2, 2026-10-04
   OPTIONS "SIMDJSON_DEVELOPER_MODE OFF" "BUILD_SHARED_LIBS OFF")
 
 # --- lemire/counters: hardware performance counters (header only) ----------
