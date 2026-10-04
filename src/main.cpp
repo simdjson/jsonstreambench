@@ -545,8 +545,10 @@ int main(int argc, char **argv) {
       simdjson::stream_format format;
     };
     const encoding encodings[] = {
+#if JSONBENCH_HAVE_NEWLINE_DELIMITED
         {"newline", data, bytes,
          simdjson::stream_format::newline_delimited},
+#endif
         {"whitespace", data, bytes,
          simdjson::stream_format::whitespace_delimited},
         {"comma", comma.data(), comma_bytes,
@@ -568,6 +570,9 @@ int main(int argc, char **argv) {
                               threaded, serial_batch, enc.format);
       });
     };
+    // Every encoding must agree with the first one parsed serially. That is
+    // newline_delimited when simdjson has it, whitespace_delimited otherwise.
+    const encoding &reference = encodings[0];
     extraction canonical;
     for (bool threaded : {false, true}) {
       for (const encoding &enc : encodings) {
@@ -575,16 +580,15 @@ int main(int argc, char **argv) {
         extraction e = sj::run_serial_format(
             enc.data, enc.size, q, sj::workload::query, threaded, serial_batch,
             enc.format);
-        if (!threaded &&
-            enc.format == simdjson::stream_format::newline_delimited) {
+        if (!threaded && &enc == &reference) {
           canonical = e;
         } else if (e.matches != canonical.matches || e.sum != canonical.sum) {
           std::fprintf(stderr,
                        "format disagreement (%s, %s): matches=%llu hash=%llu; "
-                       "newline matches=%llu hash=%llu\n",
+                       "%s matches=%llu hash=%llu\n",
                        enc.name, threaded ? "2 threads" : "serial",
                        (unsigned long long)e.matches,
-                       (unsigned long long)e.sum,
+                       (unsigned long long)e.sum, reference.name,
                        (unsigned long long)canonical.matches,
                        (unsigned long long)canonical.sum);
           return 2;
