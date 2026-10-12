@@ -481,6 +481,23 @@ int main(int argc, char **argv) {
       emit("simdjson", ph.phase, sj::workload_name(ph.w), 1, o, label, bytes,
            docs, s, e);
     }
+#if JSONBENCH_HAVE_NEWLINE_DELIMITED
+    // The same serial measurements under whitespace_delimited, so the two
+    // delimiter modes can be compared from one run.
+    if (o.only_engine.empty()) {
+      for (const auto &ph : sj_phases) {
+        auto s = measure_single(o.reps, [&] {
+          sj::run_serial_format(data, bytes, q, ph.w, false, serial_batch,
+                                simdjson::stream_format::whitespace_delimited);
+        });
+        extraction e = sj::run_serial_format(
+            data, bytes, q, ph.w, false, serial_batch,
+            simdjson::stream_format::whitespace_delimited);
+        emit("simdjson-ws", ph.phase, sj::workload_name(ph.w), 1, o, label,
+             bytes, docs, s, e);
+      }
+    }
+#endif
     // simdjson's own two-thread stage1/stage2 pipeline, for reference.
     auto s = measure_parallel(o.reps, [&] {
       sj::run_serial(data, bytes, q, sj::workload::query, true,
