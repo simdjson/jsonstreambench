@@ -30,14 +30,14 @@ include(get_cpm)
 
 # --- simdjson --------------------------------------------------------------
 # The parallel stream driver is ours (src/parallel_stream.h), so this is a plain
-# simdjson commit rather than a patched branch: the 5.0.2 release commit, which
-# ships stream_format::newline_delimited and simdjson::slice_at (#2803). An
+# simdjson commit rather than a patched branch: simdjson 5.0.6 (commit 98464972),
+# which ships stream_format::newline_delimited and simdjson::slice_at (#2803). An
 # older release still builds -- the probe below detects their absence and the
 # driver falls back to its own slicing -- but it measures a different thing.
 # Pinned by SHA to keep the paper reproducible; override with
 # -DJSONBENCH_SIMDJSON_TAG=<sha> to compare another simdjson (use a separate
 # build directory per value).
-set(JSONBENCH_SIMDJSON_TAG c9030726ebbf5f9fe9f9facb4a401f6d3ccd77a2  # 5.0.2, 2026-10-04
+set(JSONBENCH_SIMDJSON_TAG 9846497219e5acf4dccaa20bb99b027a477340a3  # 5.0.6
     CACHE STRING "simdjson commit to build against")
 
 CPMAddPackage(
