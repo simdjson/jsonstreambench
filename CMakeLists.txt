@@ -34,12 +34,16 @@ include(get_cpm)
 # ships stream_format::newline_delimited and simdjson::slice_at (#2803). An
 # older release still builds -- the probe below detects their absence and the
 # driver falls back to its own slicing -- but it measures a different thing.
-# Pinned by SHA to keep the paper reproducible.
+# Pinned by SHA to keep the paper reproducible; override with
+# -DJSONBENCH_SIMDJSON_TAG=<sha> to compare another simdjson (use a separate
+# build directory per value).
+set(JSONBENCH_SIMDJSON_TAG c9030726ebbf5f9fe9f9facb4a401f6d3ccd77a2  # 5.0.2, 2026-10-04
+    CACHE STRING "simdjson commit to build against")
 
 CPMAddPackage(
   NAME simdjson
   GITHUB_REPOSITORY simdjson/simdjson
-  GIT_TAG c9030726ebbf5f9fe9f9facb4a401f6d3ccd77a2  # 5.0.2, 2026-10-04
+  GIT_TAG ${JSONBENCH_SIMDJSON_TAG}
   OPTIONS "SIMDJSON_DEVELOPER_MODE OFF" "BUILD_SHARED_LIBS OFF")
 
 # --- lemire/counters: hardware performance counters (header only) ----------

@@ -251,6 +251,29 @@ extraction run_serial_format(const char *data, size_t size, query_id q,
   return total;
 }
 
+extraction run_single_document(const char *data, size_t size, query_id q,
+                               workload w) {
+  ondemand::parser parser;
+  extraction total;
+  ondemand::document doc;
+  if (parser.iterate(padded_string_view(data, size, size + SIMDJSON_PADDING))
+          .get(doc)) {
+    return total;
+  }
+  if (w == workload::structure) {
+    total.matches++;
+    return total;
+  }
+  ondemand::array items;
+  if (doc.get_array().get(items)) { return total; }
+  for (auto item : items) {
+    ondemand::value v;
+    if (item.get(v)) { break; }
+    if (dispatch(v, total, q, w)) { break; }
+  }
+  return total;
+}
+
 extraction run_parallel(const char *data, size_t size, query_id q, workload w,
                         size_t threads, size_t slice_bytes,
                         bool static_partition) {

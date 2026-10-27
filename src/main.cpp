@@ -37,6 +37,11 @@
 #include <thread>
 #include <vector>
 
+#if defined(__linux__)
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
+
 using namespace jsonbench;
 
 namespace {
@@ -53,6 +58,7 @@ struct options {
   bool single_record = false;
   bool verify_only = false;
   bool no_dom = false;
+  bool interleave = false; // spread every page over all NUMA nodes
   size_t dump = 0;
   int levels = 0; // 0 = derive from the query
   // Which output sections to produce. Defaults to all of them; the sweep
@@ -90,6 +96,8 @@ void usage() {
       "  --batch-mb <n>       iterate_many batch size (default 16)\n"
       "  --single-record      treat the input as one bulky JSON document\n"
       "  --no-dom             skip conventional DOM parser benchmarks\n"
+      "  --interleave         interleave memory over all NUMA nodes (as\n"
+      "                       numactl --interleave=all; Linux only)\n"
       "  --verify             check that the engines agree, then exit\n"
       "  --dump <n>           print the first n extracted values from each\n"
       "                       engine side by side, then exit\n"
@@ -99,6 +107,33 @@ void usage() {
       "                       simdjson-parallel); pair with --sections scaling\n"
       "                       to profile one engine alone\n"
       "  --impl <name>        force a simdjson kernel (haswell, icelake, ...)\n");
+}
+
+// The bulky record as both engines get it, prepared once and untimed:
+//  * {"tweets": [...]} is unwrapped to its array, which is the form Pison's own
+//    examples query ($[*].user.lang). Pison cannot take the wrapped form: below
+//    the top level its iterator has room for MAX_NUM_ELE/8 = 125,000 element
+//    positions, and the tweet array has 155,489 elements.
+//  * Carriage returns become spaces. Pison skips only ' ' and '\n' before a
+//    value, so it finds no element of a CRLF-separated array. A raw CR can only
+//    be whitespace between tokens in valid JSON, so the document is unchanged.
+bool prepare_bulky(std::string &raw, query_id q) {
+  for (char &c : raw) {
+    if (c == '\r') { c = ' '; }
+  }
+  const char *key = bulky_array(q);
+  if (!key) { return true; }
+  simdjson::ondemand::parser parser;
+  simdjson::padded_string padded(raw);
+  simdjson::ondemand::document doc;
+  simdjson::ondemand::array items;
+  std::string_view inner;
+  if (parser.iterate(padded).get(doc) || doc[key].get_array().get(items) ||
+      items.raw_json().get(inner)) {
+    return false;
+  }
+  raw.assign(inner.data(), inner.size());
+  return true;
 }
 
 bool parse_args(int argc, char **argv, options &o) {
@@ -124,6 +159,7 @@ bool parse_args(int argc, char **argv, options &o) {
     }
     else if (a == "--single-record") { o.single_record = true; }
     else if (a == "--no-dom") { o.no_dom = true; }
+    else if (a == "--interleave") { o.interleave = true; }
     else if (a == "--verify") { o.verify_only = true; }
     else if (a == "--dump") { o.dump = strtoull(next().c_str(), nullptr, 10); }
     else if (a == "--sections") { o.sections = next(); }
@@ -222,18 +258,39 @@ int main(int argc, char **argv) {
                  o.dataset.c_str());
     return 1;
   }
-  // Pison's level_num bounds how many bitmap levels it allocates. It must be at
-  // least the query's depth, but also at least the *document's* depth: the
-  // constructor only allocates mLevColonBitmap[0..level_num-1] while index
-  // construction happily writes at the record's true nesting level, so a record
-  // deeper than level_num dereferences a null bitmap pointer (SIGBUS). We
-  // therefore derive a per-dataset value and allow an override.
-  const int levels = o.levels > 0 ? o.levels : query_levels(q);
+  // Pison's level_num bounds how many bitmap levels it builds. It must cover
+  // the query's depth (see query_levels); we derive it and allow an override.
+  // A bulky record is a top-level array of records ($[*]): one more level.
+  const int levels = o.levels > 0 ? o.levels
+                                  : query_levels(q) + (o.single_record ? 1 : 0);
   const std::string label = o.label.empty() ? stem(o.dataset) : o.label;
+
+  // Set before the input is read, so the buffer and every later allocation are
+  // spread over the nodes. The kernel drops nodes that do not exist.
+  if (o.interleave) {
+#if defined(__linux__)
+    const unsigned long all_nodes[16] = {~0UL, ~0UL, ~0UL, ~0UL, ~0UL, ~0UL,
+                                         ~0UL, ~0UL, ~0UL, ~0UL, ~0UL, ~0UL,
+                                         ~0UL, ~0UL, ~0UL, ~0UL};
+    const int mpol_interleave = 3; // MPOL_INTERLEAVE, <linux/mempolicy.h>
+    if (syscall(SYS_set_mempolicy, mpol_interleave, all_nodes,
+                8 * sizeof(all_nodes)) != 0) {
+      std::perror("set_mempolicy");
+      return 1;
+    }
+#else
+    std::fprintf(stderr, "--interleave needs Linux\n");
+    return 1;
+#endif
+  }
 
   std::string raw;
   if (!read_file(o.dataset, raw)) {
     std::fprintf(stderr, "cannot read %s\n", o.dataset.c_str());
+    return 1;
+  }
+  if (o.single_record && !prepare_bulky(raw, q)) {
+    std::fprintf(stderr, "cannot unwrap the bulky record %s\n", o.dataset.c_str());
     return 1;
   }
   // simdjson reads a little past the end of the buffer; give it the padding it
@@ -254,10 +311,12 @@ int main(int argc, char **argv) {
   }
 
   std::printf("# jsonbench dataset=%s query=%s levels=%d bytes=%zu "
-              "slice_kb=%zu simdjson_impl=%s hardware_threads=%u counters=%s\n",
+              "slice_kb=%zu simdjson_impl=%s hardware_threads=%u counters=%s "
+              "simdjson_version=%s mempolicy=%s\n",
               label.c_str(), query_name(q), levels, bytes, slice_kb,
               sj::implementation_name(), hw,
-              counters::has_performance_counters() ? "yes" : "no");
+              counters::has_performance_counters() ? "yes" : "no",
+              SIMDJSON_VERSION, o.interleave ? "interleave" : "default");
 
   // -----------------------------------------------------------------------
   // The bulky-record scenario: Pison's own headline, where a stream parser
@@ -267,17 +326,39 @@ int main(int argc, char **argv) {
     // simdjson first: it cannot fail here, and Pison's parallel constructor can
     // (see below), so measuring it first keeps a crash from costing us the
     // whole comparison.
+    // Pison gets the layout its own loadSingleRecord builds: 64-byte aligned,
+    // padded with 'd' to a 64-byte multiple, then a NUL. Built once, untimed.
+    const size_t ppadded = detail::padded_length(bytes);
+    aligned_buffer precord;
+    precord.resize(ppadded + 64);
+    std::memcpy(precord.data(), data, bytes);
+    std::memset(precord.data() + bytes, 'd', ppadded - bytes);
+    std::memset(precord.data() + ppadded, '\0', precord.size() - ppadded);
+    const char *ptext1 = precord.data();
+    // The document is parsed as one document: iterate_many would split it.
+    // Pison and simdjson must agree on the query before anything is timed.
+    extraction sqe = sj::run_single_document(data, bytes, q, sj::workload::query);
+    extraction pqe = pison::run_single_record(
+        ptext1, ppadded, q, pison::workload::query, levels, 1);
+    const bool bulky_agree = sqe.matches > 0 && pqe.matches == sqe.matches &&
+                             pqe.sum == sqe.sum;
+    std::printf("# agreement bulky: pison matches=%llu hash=%llu | "
+                "simdjson matches=%llu hash=%llu | %s\n",
+                (unsigned long long)pqe.matches, (unsigned long long)pqe.sum,
+                (unsigned long long)sqe.matches, (unsigned long long)sqe.sum,
+                bulky_agree ? "AGREE"
+                            : (pqe.matches == sqe.matches ? "COUNT-ONLY"
+                                                          : "DISAGREE"));
+    std::fflush(stdout);
+    if (!bulky_agree) { return 2; }
     auto ss = measure_single(o.reps, [&] {
-      sj::run_serial(data, bytes, q, sj::workload::structure, false, bytes + 1);
+      sj::run_single_document(data, bytes, q, sj::workload::structure);
     });
-    extraction se =
-        sj::run_serial(data, bytes, q, sj::workload::structure, false, bytes + 1);
+    extraction se = sj::run_single_document(data, bytes, q, sj::workload::structure);
     emit("simdjson", "index", "structure", 1, o, label, bytes, 1, ss, se);
     auto sq = measure_single(o.reps, [&] {
-      sj::run_serial(data, bytes, q, sj::workload::query, false, bytes + 1);
+      sj::run_single_document(data, bytes, q, sj::workload::query);
     });
-    extraction sqe =
-        sj::run_serial(data, bytes, q, sj::workload::query, false, bytes + 1);
     emit("simdjson", "query", "query", 1, o, label, bytes, 1, sq, sqe);
 
     for (size_t t : o.threads) {
@@ -285,12 +366,19 @@ int main(int argc, char **argv) {
       // exactly 2 threads on these inputs; skip that point rather than die.
       if (t == 2) { continue; }
       auto s = measure_parallel(o.reps, [&] {
-        pison::run_single_record(data, bytes, q, pison::workload::structure,
+        pison::run_single_record(ptext1, ppadded, q, pison::workload::structure,
                                  levels, int(t));
       });
       extraction e = pison::run_single_record(
-          data, bytes, q, pison::workload::structure, levels, int(t));
+          ptext1, ppadded, q, pison::workload::structure, levels, int(t));
       emit("pison", "index", "structure", t, o, label, bytes, 1, s, e);
+      auto sp = measure_parallel(o.reps, [&] {
+        pison::run_single_record(ptext1, ppadded, q, pison::workload::query,
+                                 levels, int(t));
+      });
+      extraction ep = pison::run_single_record(
+          ptext1, ppadded, q, pison::workload::query, levels, int(t));
+      emit("pison", "query", "query", t, o, label, bytes, 1, sp, ep);
     }
     return 0;
   }

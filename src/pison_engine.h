@@ -33,7 +33,8 @@ extraction run_stream(const char *text, const record_table &table, query_id q,
 
 // One bulky record indexed by Pison's ParallelBitmapConstructor -- the
 // scenario Pison's paper is built around, and the one a stream parser does not
-// address.
+// address. The record is a top-level array and the query is applied to every
+// element ($[*]...), as in Pison's own examples; `levels` must cover it.
 extraction run_single_record(const char *text, size_t size, query_id q,
                              workload w, int levels, int threads);
 

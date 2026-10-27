@@ -48,6 +48,10 @@ bool query_from_name(const std::string &s, query_id &out);
 // Nesting depth the query needs, i.e. the number of bitmap levels Pison must
 // build. Passing the minimum is the choice most favourable to Pison.
 int query_levels(query_id q);
+// Key of the dominating array in the dataset's bulky form ({"tweets": [...]}),
+// or nullptr when the bulky record is itself the array. --single-record
+// unwraps it, and the bulky query is $[*] followed by the per-record query.
+const char *bulky_array(query_id q);
 // Guess the query from a dataset filename (twitter_small_records.json -> twitter).
 bool query_from_path(const std::string &path, query_id &out);
 

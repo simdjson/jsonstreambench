@@ -353,7 +353,26 @@ extraction run_stream(const char *text, const record_table &table, query_id q,
 extraction run_single_record(const char *text, size_t size, query_id q,
                              workload w, int levels, int threads) {
   extraction total;
-  do_record(text, 0, size, q, w, levels, threads, total);
+  Record rec;
+  rec.text = const_cast<char *>(text);
+  rec.rec_start_pos = 0;
+  rec.rec_length = long(size);
+  rec.can_delete_text = false;
+
+  Bitmap *bm = BitmapConstructor::construct(&rec, threads, levels);
+  if (bm == nullptr) { return total; }
+  if (w == workload::structure) {
+    total.matches++;
+  } else if (BitmapIterator *iter = BitmapConstructor::getIterator(bm)) {
+    // As in Pison's own examples: $[*] then the per-record query.
+    while (iter->isArray() && iter->moveNext()) {
+      if (!iter->down()) { continue; }
+      run_query(iter, total, q, w);
+      iter->up();
+    }
+    delete iter;
+  }
+  delete bm;
   return total;
 }
 

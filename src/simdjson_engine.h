@@ -40,6 +40,12 @@ extraction run_serial_format(const char *data, size_t size, query_id q,
                              std::vector<std::string> *trace = nullptr,
                              size_t trace_limit = 0);
 
+// One bulky document, a top-level array parsed as a single document (not as a
+// stream). The query is applied to every element: $[*].user.lang, $[*].lang.
+// `structure` runs stage 1 over the whole document and touches nothing.
+extraction run_single_document(const char *data, size_t size, query_id q,
+                               workload w);
+
 // This repository's own parallel stream driver, src/parallel_stream.h.
 extraction run_parallel(const char *data, size_t size, query_id q, workload w,
                         size_t threads, size_t slice_bytes,

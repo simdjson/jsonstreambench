@@ -32,13 +32,12 @@ bool query_from_name(const std::string &s, query_id &out) {
 // the smallest value that is *valid*, which is the choice most favourable to
 // Pison.
 //
-// The value is not simply the query's depth. Pison's SerialBitmap constructor
-// allocates mLevColonBitmap[0..level_num-1], but index construction writes at
-// the record's true nesting level regardless, so a record deeper than level_num
-// dereferences a null bitmap pointer and dies with SIGBUS. level_num must
-// therefore cover the *document*, not the query. These are the minima we
-// established empirically: the smallest level_num for which Pison neither
-// crashes nor disagrees with simdjson on any record of the dataset.
+// The value is the query's depth, counting array levels. Index construction
+// guards its writes with cur_level <= mDepth, so documents nesting deeper than
+// level_num are safe; it is query evaluation that needs a bitmap for every
+// level it descends into, and crashes when one is missing. These are the
+// minima we established empirically: wherever the minimum exceeds one, one
+// level fewer crashes.
 //
 //   dataset     query                                       query  minimum
 //                                                           depth  level_num
@@ -60,6 +59,20 @@ int query_levels(query_id q) {
   case query_id::openalex: return 1;
   }
   return 22; // MAX_LEVEL: always safe, never fast
+}
+
+// The dominating array of each bulky record (datasets.sh, make_ndjson).
+const char *bulky_array(query_id q) {
+  switch (q) {
+  case query_id::twitter: return "tweets";
+  case query_id::bestbuy: return "products";
+  case query_id::google_map: return "items";
+  case query_id::nspl: return "data";
+  case query_id::walmart: return "items";
+  case query_id::wiki: return "items";
+  case query_id::openalex: return nullptr;
+  }
+  return nullptr;
 }
 
 bool query_from_path(const std::string &path, query_id &out) {
