@@ -28,6 +28,10 @@
 #include "simdjson.h"
 
 #include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <sched.h>
 #include <cstring>
 #include <thread>
 #include <utility>
@@ -125,6 +129,22 @@ result<T> parse_many(simdjson::padded_string_view json, F &&extract,
   if (!internal::splittable(opt.format)) { workers = 1; }
   const size_t slice_bytes = opt.slice_bytes ? opt.slice_bytes : (256u << 10);
 
+  // skew-probe: JSONBENCH_CHUNK=k claims k adjacent slices per fetch_add;
+  // JSONBENCH_TRACE=1 prints each worker's bytes, slices, cpu and finish time.
+  static const size_t chunk = [] {
+    const char *e = std::getenv("JSONBENCH_CHUNK");
+    return e ? size_t(std::strtoull(e, nullptr, 10)) : size_t(1);
+  }();
+  static const bool trace = std::getenv("JSONBENCH_TRACE") != nullptr;
+  static size_t call = 0;
+  call++;
+  struct worker_trace { size_t bytes = 0, slices = 0; long long start_ns = 0, end_ns = 0;
+                        int cpu0 = -1, cpu1 = -1; };
+  std::vector<worker_trace> wt(workers);
+  const auto t0 = std::chrono::steady_clock::now();
+  auto since = [&] { return (long long)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                         std::chrono::steady_clock::now() - t0).count(); };
+
   out._shards.resize(workers);
   std::vector<size_t> errors(workers, 0);
   std::vector<error_code> first(workers, SUCCESS);
@@ -137,6 +157,10 @@ result<T> parse_many(simdjson::padded_string_view json, F &&extract,
       simdjson::ondemand::parser parser;
       parser.threaded = false;
       std::vector<T> &shard = out._shards[w];
+      worker_trace &tr = wt[w];
+      tr.start_ns = since();
+      tr.cpu0 = sched_getcpu();
+      size_t claimed = 0, claim_end = 0;
 
       const size_t slices = (length + slice_bytes - 1) / slice_bytes;
       size_t next = slices * w / workers;
@@ -148,11 +172,17 @@ result<T> parse_many(simdjson::padded_string_view json, F &&extract,
           if (next >= last) { break; }
           i = next++;
         } else {
-          i = cursor.fetch_add(1, std::memory_order_relaxed);
+          if (claimed == claim_end) {
+            claimed = cursor.fetch_add(chunk, std::memory_order_relaxed);
+            claim_end = claimed + chunk;
+          }
+          i = claimed++;
         }
         if (i * slice_bytes >= length) { break; }
         auto piece = internal::slice_at(json, delimiter, slice_bytes, i);
         if (piece.empty()) { continue; }
+        tr.bytes += piece.size();
+        tr.slices++;
 
         simdjson::ondemand::document_stream stream;
         if (auto e = parser.iterate_many(piece, piece.size(), opt.format)
@@ -172,9 +202,21 @@ result<T> parse_many(simdjson::padded_string_view json, F &&extract,
           shard.push_back(std::move(value));
         }
       }
+      tr.end_ns = since();
+      tr.cpu1 = sched_getcpu();
     });
   }
   for (auto &t : pool) { t.join(); }
+  if (trace) {
+    for (size_t w = 0; w < workers; w++) {
+      std::fprintf(stderr, "TRACE call=%zu threads=%zu assign=%s chunk=%zu slice=%zu w=%zu "
+                   "cpu0=%d cpu1=%d bytes=%zu slices=%zu start_ns=%lld end_ns=%lld\n",
+                   call, workers, opt.static_partition ? "static" : "dynamic",
+                   opt.static_partition ? size_t(0) : chunk, slice_bytes, w,
+                   wt[w].cpu0, wt[w].cpu1, wt[w].bytes, wt[w].slices,
+                   wt[w].start_ns, wt[w].end_ns);
+    }
+  }
 
   for (size_t w = 0; w < workers; w++) {
     out._errors += errors[w];
