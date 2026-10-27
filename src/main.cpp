@@ -54,7 +54,7 @@ struct options {
   int reps = 3;
   size_t slice_kb = 0;      // parallel slice size; 0 = derived from the corpus
   size_t batch_mb = 16;     // iterate_many batch for the built-in 2-thread mode
-  bool static_partition = true;   // --assign dynamic to override
+  bool static_partition = false;  // --assign static to override
   bool single_record = false;
   bool verify_only = false;
   bool no_dom = false;
@@ -92,7 +92,7 @@ void usage() {
       "  --threads a,b,c      thread counts to sweep (default: 1..hw, doubling)\n"
       "  --reps <n>           repetitions per configuration, best wins (default 3)\n"
       "  --slice-kb <n>       parallel slice size (default: derived from the corpus)\n"
-      "  --assign <mode>      slice assignment: static (default) or dynamic\n"
+      "  --assign <mode>      slice assignment: dynamic (default) or static\n"
       "  --batch-mb <n>       iterate_many batch size (default 16)\n"
       "  --single-record      treat the input as one bulky JSON document\n"
       "  --no-dom             skip conventional DOM parser benchmarks\n"

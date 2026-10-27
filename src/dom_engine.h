@@ -48,7 +48,7 @@ extraction run_parallel(library lib, const char *data, size_t size, query_id q,
 // Mirrors parallel::options::static_partition for the DOM drivers, which share
 // run_sliced rather than a per-call options struct. Set before a run.
 inline bool &static_partition_flag() {
-  static bool value = true;
+  static bool value = false;
   return value;
 }
 

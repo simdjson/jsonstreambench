@@ -49,7 +49,7 @@ extraction run_single_document(const char *data, size_t size, query_id q,
 // This repository's own parallel stream driver, src/parallel_stream.h.
 extraction run_parallel(const char *data, size_t size, query_id q, workload w,
                         size_t threads, size_t slice_bytes,
-                        bool static_partition = true);
+                        bool static_partition = false);
 
 const char *implementation_name();
 

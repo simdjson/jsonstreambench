@@ -44,10 +44,12 @@ struct options {
   size_t threads = 0;                 // 0 = hardware_concurrency()
   size_t slice_bytes = 64u << 10;
   stream_format format = stream_format::whitespace_delimited;
-  // Each worker owns one contiguous run of slices. The alternative, claiming
-  // the next free slice from a shared counter, scatters a worker's regions
-  // across the input and costs up to 1.55x; it is kept only for reproduction.
-  bool static_partition = true;
+  // By default each worker claims the next free slice from the shared counter,
+  // which balances load when slices take unequal time or workers start late
+  // (threads are created one after another). Static partitioning gives each
+  // worker one contiguous run of slices instead. Neither wins everywhere:
+  // static is faster when slices are shorter than the records; see README.md.
+  bool static_partition = false;
 };
 
 template <typename T> class result {

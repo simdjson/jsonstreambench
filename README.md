@@ -27,7 +27,7 @@ jsonbench --dataset <file.ndjson> [options]
   --threads a,b,c      thread counts to sweep (default: 1..hw, doubling)
   --reps <n>           repetitions per configuration, best wins (default 3)
   --slice-kb <n>       parallel slice size (default: derived from the corpus)
-  --assign <mode>      slice assignment: static (default) or dynamic
+  --assign <mode>      slice assignment: dynamic (default) or static
   --batch-mb <n>       iterate_many batch size (default 16)
   --sections <list>    load,verify,single,scaling,e2e,format (default: all
                        but format)
@@ -125,13 +125,18 @@ simdjson *release* lacks both, since releases are cut from a `4.6.x` branch, and
 against one the driver falls back to slicing with `memchr`.
 
 Two knobs control it, and the right values depend on the corpus rather than on
-the machine. `--assign` (default `static`) gives each worker one contiguous run
-of slices; `dynamic` instead has workers claim the next free slice from a shared
-counter, which scatters their regions across the input and, once slices are
-small enough for the counter to be contended, costs a large fraction of the
-throughput. `--slice-kb` (default: derived from the corpus) sets the slice.
-Published measurements used `dynamic` with an explicit 256 KiB slice; the
-original driver defaulted to 1024 KiB and `dynamic`. These settings were tuned
+the machine. `--assign` (default `dynamic`) has workers claim the next free
+slice from a shared counter; `static` instead gives each worker one contiguous
+run of slices. Neither wins everywhere, but dynamic is the more robust choice.
+Each call creates its threads one after another, and the workers start at
+different times: on a two-socket EPYC 9R14, the last of 96 workers starts about
+4 ms into a 5 ms call. Static then waits for the last worker to finish its full
+share, while dynamic lets the early workers take more slices; there dynamic was
+up to 1.19x faster. Static is faster when slices are shorter than the records
+(Google Maps at 64 KiB), where it keeps the rescans of one record on one worker;
+elsewhere the two were within a few percent of each other.
+`--slice-kb` (default: derived from the corpus) sets the slice. The paper's
+measurements use `dynamic` with the derived slice. These settings were tuned
 on the six Pison datasets and do not transfer to bulky records: a record larger
 than a slice is rescanned across overlapping slices, hurting throughput but
 not correctness.
