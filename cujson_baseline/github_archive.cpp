@@ -13,6 +13,8 @@
 // best of --reps runs after one untimed run:
 //
 //   lines/serial     simdjson's iterate_many over the JSON lines, one thread
+//   lines/threaded   the same, with simdjson's stage 1 of the next batch on a
+//                    second thread (parser.threaded), two threads
 //   lines/parallel   the slicing driver of src/parallel_stream.h, per thread
 //                    count
 //   document/serial  the same events as one JSON array (--document), one
@@ -59,8 +61,10 @@ template <typename Doc> error_code push_repo_name(Doc doc, extraction &out) {
   return SUCCESS;
 }
 
-extraction lines_serial(ondemand::parser &parser, const padded_string &json) {
+extraction lines_serial(ondemand::parser &parser, const padded_string &json,
+                        bool threaded) {
   extraction total;
+  parser.threaded = threaded;
   ondemand::document_stream stream;
   // One event is 2.7 MB, more than the default 1 MB batch; 16 MB is the
   // benchmark's default (--batch-mb).
@@ -230,13 +234,16 @@ int main(int argc, char **argv) {
   }
 
   ondemand::parser parser;
-  timing t;
-  if (!measure(reps, t, [&] { return lines_serial(parser, lines); }) ||
-      t.result.matches != reference.matches || t.result.sum != reference.sum) {
-    std::fprintf(stderr, "lines/serial failed or disagreed (matches=%llu)\n",
-                 (unsigned long long)t.result.matches);
-  } else {
-    emit("lines", "serial", 1, lines.size(), t);
+  for (bool threaded : {false, true}) {
+    const char *mode = threaded ? "threaded" : "serial";
+    timing t;
+    if (!measure(reps, t, [&] { return lines_serial(parser, lines, threaded); }) ||
+        t.result.matches != reference.matches || t.result.sum != reference.sum) {
+      std::fprintf(stderr, "lines/%s failed or disagreed (matches=%llu)\n", mode,
+                   (unsigned long long)t.result.matches);
+    } else {
+      emit("lines", mode, threaded ? 2 : 1, lines.size(), t);
+    }
   }
 
   if (!document_file.empty()) {

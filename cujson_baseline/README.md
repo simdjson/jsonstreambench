@@ -52,6 +52,9 @@ and hashed. Each configuration runs once untimed, then `--reps` times (default
   count (default 1, 2, 4, ... up to the hardware threads), with 256 KiB slices
   and static (default) or dynamic assignment;
 * `lines/serial`: simdjson's `iterate_many`, one thread, 16 MB batches;
+* `lines/threaded`: the same with `parser.threaded` set, so that stage 1 of
+  the next batch runs on a second thread (simdjson's default when built with
+  threads);
 * `document/serial`: the events as one JSON array, one thread.
 
 Every configuration must return the same number of names with the same hash,
@@ -60,8 +63,9 @@ the rest of this benchmark; cuJSON's 323.1 ms on an NVIDIA A100 also counts
 copying the input to the GPU and the results back.
 
 On a dual-socket Intel Xeon Gold 6548N (`results/big4_github.txt`), the
-slicing driver answers the query in 16.7 ms at 64 threads, and one thread
-with `iterate_many` takes 200 ms.
+slicing driver answers the query in 18.8 ms at 32 threads (static
+assignment). On one thread, `iterate_many` takes 342 ms and the slicing driver
+334 ms; with its second thread, `iterate_many` takes 196 ms.
 
 ## cujson_baseline
 
