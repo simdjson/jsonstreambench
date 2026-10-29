@@ -127,7 +127,7 @@ bulky records. On the Xeon Gold 6548N (`results/big4_parse.txt`,
 `results/big4_query.txt`), cuJSON's measurement gives 1.9 to 3.9 GB/s, a
 full DOM parse with warm memory 1.3 to 2.1 GB/s, and the end-to-end query 2.3
 to 2.8 GB/s; with a fresh parser and the C library's allocator, page faults
-cost 30 to 50 percent.
+cost 23 to 42 percent of that end-to-end time.
 
 ## Results
 
