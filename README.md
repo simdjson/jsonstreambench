@@ -197,6 +197,13 @@ A single file can also be converted directly:
 ./build/make_ndjson twitter_large_record.json twitter.ndjson tweets
 ```
 
+## The cuJSON workloads
+
+`cujson_baseline/` runs simdjson on the workloads of the cuJSON paper (ASPLOS
+'26): its end-to-end GitHub Archive query, serially and with the slicing
+driver, and its single-document simdjson baseline, measured as the paper does
+and as it should be. See `cujson_baseline/README.md`.
+
 ## Defects found in the upstream artifacts
 
 Reported because they affect anyone using these as a baseline.

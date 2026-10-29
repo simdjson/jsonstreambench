@@ -46,6 +46,13 @@ extraction run_serial_format(const char *data, size_t size, query_id q,
 extraction run_single_document(const char *data, size_t size, query_id q,
                                workload w);
 
+// One bulky record as published ({"tweets": [...]} and so on), parsed with the
+// caller's parser: the query runs on every element of the dominating array
+// (bulky_array). For cujson_baseline, which controls the parser's allocation.
+extraction run_bulky_document(simdjson::ondemand::parser &parser,
+                              const simdjson::padded_string &json, query_id q,
+                              workload w);
+
 // This repository's own parallel stream driver, src/parallel_stream.h.
 extraction run_parallel(const char *data, size_t size, query_id q, workload w,
                         size_t threads, size_t slice_bytes,

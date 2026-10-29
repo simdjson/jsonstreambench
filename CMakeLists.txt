@@ -216,6 +216,12 @@ if(JSONBENCH_NATIVE)
   endif()
 endif()
 
+# --- simdjson as the cuJSON paper measures it ------------------------------
+# See cujson_baseline/README.md.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_subdirectory(cujson_baseline)
+endif()
+
 # --- dataset preparation tool ----------------------------------------------
 # Derives the JSON-lines form of a dataset from its bulky single-record form by
 # minifying every element of the dominating array onto its own line.

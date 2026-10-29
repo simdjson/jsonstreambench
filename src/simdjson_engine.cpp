@@ -274,6 +274,29 @@ extraction run_single_document(const char *data, size_t size, query_id q,
   return total;
 }
 
+extraction run_bulky_document(ondemand::parser &parser,
+                              const padded_string &json, query_id q,
+                              workload w) {
+  extraction total;
+  ondemand::document doc;
+  if (parser.iterate(json).get(doc)) { return total; }
+  if (w == workload::structure) {
+    total.matches++;
+    return total;
+  }
+  const char *key = bulky_array(q);
+  ondemand::array items;
+  if (key ? doc[key].get_array().get(items) : doc.get_array().get(items)) {
+    return total;
+  }
+  for (auto item : items) {
+    ondemand::value v;
+    if (item.get(v)) { break; }
+    if (dispatch(v, total, q, w)) { break; }
+  }
+  return total;
+}
+
 extraction run_parallel(const char *data, size_t size, query_id q, workload w,
                         size_t threads, size_t slice_bytes,
                         bool static_partition) {
