@@ -119,10 +119,14 @@ record separator (0x1E) for RFC 7464 — so comma-delimited input cannot be slic
 this way at all, its top-level commas being findable only by a serial structural
 scan. Our corpus is strictly one document per line, so simdjson is told that too
 with `stream_format::newline_delimited`, which lets it skip the tail of a
-partially read document rather than walk it. That format and
-`simdjson::slice_at` are detected at configure time rather than required: every
-simdjson *release* lacks both, since releases are cut from a `4.6.x` branch, and
-against one the driver falls back to slicing with `memchr`.
+partially read document rather than walk it. That format is detected at
+configure time rather than required, since every simdjson *release* lacks it
+(releases are cut from a `4.6.x` branch). The driver slices with its own
+`slice_at`, not `simdjson::slice_at`: a slice that starts inside a document
+longer than the slice searches for its start only within its own bytes and is
+otherwise empty, so slicing costs time linear in the input. Up to at least
+simdjson 5.0.6, `simdjson::slice_at` instead searches from every such slice to
+the document's end, which is quadratic in the document's length.
 
 Two knobs control it, and the right values depend on the corpus rather than on
 the machine. `--assign` (default `dynamic`) has workers claim the next free

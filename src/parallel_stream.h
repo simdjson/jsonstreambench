@@ -8,7 +8,7 @@
 // pipeline rather than accept ours.
 //
 // Design. Each worker claims a slice index from one atomic counter and calls
-// simdjson::slice_at, which snaps both ends to a delimiter so slices abut and
+// internal::slice_at, which snaps both ends to a delimiter so slices abut and
 // never split a document. Each
 // worker owns its parser and its output vector, so the hot path is lock-free.
 // Results come back as one vector per worker ("shards"): values keep their
@@ -83,28 +83,41 @@ inline char delimiter_for(stream_format f) {
   return f == stream_format::json_sequence ? char(0x1e) : '\n';
 }
 
-#if JSONBENCH_HAVE_NEWLINE_DELIMITED
-using simdjson::slice_at;
-#else
-// simdjson::slice_at is not in released simdjson yet; same contract.
+// Same contract as simdjson::slice_at, but a block that starts inside a long
+// document is rejected after searching only its own bytes, so the cost stays
+// linear in the input. simdjson::slice_at (through at least 5.0.6) searches
+// from every such block to the document's end, which is quadratic in the
+// document's length; we do not use it.
 inline simdjson::padded_string_view slice_at(simdjson::padded_string_view data,
                                              char delimiter, size_t block_size,
                                              size_t index) noexcept {
   if (block_size == 0 || index > data.size() / block_size) { return {}; }
   const size_t raw_begin = index * block_size;
   if (raw_begin >= data.size()) { return {}; }
-  auto snap = [&](size_t want) -> size_t {
-    if (want >= data.size()) { return data.size(); }
-    const void *p = std::memchr(data.data() + want, delimiter, data.size() - want);
-    return p ? size_t(static_cast<const char *>(p) - data.data()) + 1 : data.size();
+  auto find = [&](size_t want, size_t hi) -> const char * {
+    return static_cast<const char *>(
+        std::memchr(data.data() + want, delimiter, hi - want));
   };
-  const size_t begin = (raw_begin == 0) ? 0 : snap(raw_begin);
-  const size_t end = snap(raw_begin + block_size);
+  // Look for the start only within this block. With no delimiter there, the
+  // block lies inside a document that an earlier block owns, so it is empty;
+  // searching further would make a long document cost quadratic time.
+  size_t begin = 0;
+  if (raw_begin != 0) {
+    const size_t raw_end = (data.size() - raw_begin > block_size)
+                               ? raw_begin + block_size : data.size();
+    const char *p = find(raw_begin, raw_end);
+    if (p == nullptr) { return {}; }
+    begin = size_t(p - data.data()) + 1;
+  }
+  size_t end = data.size();
+  if (raw_begin + block_size < data.size()) {
+    const char *p = find(raw_begin + block_size, data.size());
+    if (p != nullptr) { end = size_t(p - data.data()) + 1; }
+  }
   if (begin >= end) { return {}; }
   return simdjson::padded_string_view(data.data() + begin, end - begin,
                                       data.capacity() - begin);
 }
-#endif
 
 } // namespace internal
 

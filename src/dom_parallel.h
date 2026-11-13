@@ -62,10 +62,19 @@ extraction run_sliced(const char *data, size_t length, size_t threads,
           raw = cursor.fetch_add(slice_bytes, std::memory_order_relaxed);
         }
         if (raw >= length) { break; }
-        const size_t begin = (raw == 0) ? 0 : snap_to_newline(data, length, raw);
+        // Look for the start only within this slice's own bytes. With no line
+        // feed there, the slice lies inside a document that an earlier slice
+        // owns, so it is empty; searching further would make a long document
+        // cost quadratic time over all the slices it spans.
+        size_t begin = 0;
+        if (raw != 0) {
+          const size_t hi = (length - raw > slice_bytes) ? raw + slice_bytes : length;
+          const char *nl =
+              static_cast<const char *>(std::memchr(data + raw, '\n', hi - raw));
+          if (nl == nullptr) { continue; }
+          begin = size_t(nl - data) + 1;
+        }
         const size_t end = snap_to_newline(data, length, raw + slice_bytes);
-        // Two claims can land inside one long document; the earlier one covers
-        // it and this slice is empty.
         if (begin >= end) { continue; }
         parse_slice(data + begin, end - begin, mine);
       }
